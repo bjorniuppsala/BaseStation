@@ -3,12 +3,18 @@
  COPYRIGHT (c) 2017 Mike Dunston
  Part of DCC++ BASE STATION for the Arduino / ESP8266
  **********************************************************************/
-
+#ifdef ESP32
+#include <WiFi.h>
+#include <WiFiUdp.h>
+#include <ESPmDNS.h>
+#include <SPIFFS.h>
+#else
 #include <ESP8266WiFi.h>
+#include <ESP8266mDNS.h>
+#endif
 #include <ArduinoOTA.h>
 #include <AsyncWebSocket.h>
 #include <ESPAsyncWebServer.h>
-#include <ESP8266mDNS.h>
 #include <TaskScheduler.h>
 #include <ArduinoJson.h>
 #include <AsyncJson.h>
@@ -20,6 +26,7 @@
 #include "Output.h"
 #include "Turnout.h"
 #include "ProgramRequest.h"
+#include <algorithm>
 
 #define UNUSED(x) (void)(x)
 
@@ -177,18 +184,28 @@ void handleNotFound(AsyncWebServerRequest *request) {
 void handleESPInfo(AsyncWebServerRequest *request) {
 	auto jsonResponse = new AsyncJsonResponse(true);
 	JsonArray& root = jsonResponse->getRoot();
+	#ifndef ESP32
 	root.createNestedObject()[F("id")] = F("ESP Core");
 	root.get<JsonObject&>(0)[F("value")] = String(ESP.getCoreVersion());
 	root.createNestedObject()[F("id")] = F("ESP Boot Loader");
 	root.get<JsonObject&>(1)[F("value")] = String(ESP.getBootVersion());
+	#endif
 	root.createNestedObject()[F("id")] = F("ESP SDK");
 	root.get<JsonObject&>(2)[F("value")] = String(ESP.getSdkVersion());
 	root.createNestedObject()[F("id")] = F("Available Heap Space");
 	root.get<JsonObject&>(3)[F("value")] = String(ESP.getFreeHeap());
+	#ifndef ESP32
 	root.createNestedObject()[F("id")] = F("Available Sketch Space");
 	root.get<JsonObject&>(4)[F("value")] = String(ESP.getFreeSketchSpace());
+	#endif
 	root.createNestedObject()[F("id")] = F("ESP Chip ID");
-	root.get<JsonObject&>(5)[F("value")] = String(ESP.getChipId(), HEX);
+	root.get<JsonObject&>(5)[F("value")] =
+	#ifndef ESP32
+	 String(ESP.getChipId(), HEX);
+	#else
+	String(static_cast<uint32_t>(ESP.getEfuseMac() >> 32), HEX) +
+	String(static_cast<uint32_t>(ESP.getEfuseMac() & 0xffffffff), HEX);
+	#endif
 	root.createNestedObject()[F("id")] = F("CPU Speed");
 	root.get<JsonObject&>(6)[F("value")] = String(ESP.getCpuFreqMHz());
 	root.createNestedObject()[F("id")] = F("Flash Size");
@@ -201,7 +218,11 @@ void handleESPInfo(AsyncWebServerRequest *request) {
 
 void handleProgrammer(AsyncWebServerRequest *request) {
 	auto jsonResponse = new AsyncJsonResponse();
+	#ifndef ESP32
 	int callbackNumber = ESP.getChipId() / 32767;
+	#else
+	int callbackNumber = static_cast<int>(ESP.getEfuseMac() & 0xffff);
+	#endif
 	int callbackSubNumber = millis() % 32767;
 	if (request->method() == HTTP_GET) {
 		// get status of request
@@ -476,10 +497,15 @@ void handleSensors(AsyncWebServerRequest *request) {
 
 void setup() {
 	SPIFFS.begin();
-
+#ifndef ESP32
 	WiFi.setAutoConnect(false);
 	WiFi.hostname(HOSTNAME);
-
+#else
+WiFi.getMode();
+WiFi.mode(WIFI_MODE_STA);
+	WiFi.setAutoConnect(false);
+	WiFi.setHostname(HOSTNAME);
+#endif
 	currentDCCppCommand.reserve(128);
 
 	webSocket.onEvent(onWSEvent);
@@ -513,7 +539,11 @@ void setup() {
 
 void loop() {
 	taskScheduler.execute();
+	#ifndef ESP32
 	if (DCCppServer.status() == LISTEN) {
+	#else
+	if (DCCppServer) {
+	#endif
 		if (DCCppServer.hasClient()) {
 			for (int i = 0; i < MAX_DCCPP_CLIENTS; i++) {
 				if (!DCCppClients[i] || !DCCppClients[i].connected()) {
@@ -530,32 +560,27 @@ void loop() {
 		for (int i = 0; i < MAX_DCCPP_CLIENTS; i++) {
 			if (DCCppClients[i] && DCCppClients[i].connected()) {
 				if (DCCppClients[i].available()) {
-					size_t len = DCCppClients[i].available();
-					char sbuf[len + 1];
-					char cmdBuf[len + 1];
-					DCCppClients[i].peekBytes(sbuf, len);
-					sbuf[len] = '\0';
-					size_t baseOffs = 0;
-					for (size_t idx = 0; idx < len; idx++) {
-						if (sbuf[baseOffs] == '<' && sbuf[idx] == '>') {
-							// we have a complete command string, len is +1 to capture the >
-							size_t bytesRead = DCCppClients[i].readBytes(cmdBuf,
-									idx - baseOffs + 1);
-							// store this so we can read off chunks later
-							baseOffs = idx;
-							// make sure we null terminate the string
-							cmdBuf[bytesRead] = '\0';
-							// submit command to DCC++ pending queue...
-							DCCppPendingCommands.push(String(cmdBuf));
-							//SERIAL_LINK_DEV.println("IN CMD:" + String(cmdBuf));
-						} else if (sbuf[baseOffs] == '\r'
-								|| sbuf[baseOffs] == '\n') {
-							// store this so we can read off chunks later
-							baseOffs = idx;
-							// discard the \r or \n
-							DCCppClients[i].read();
+					static std::vector<uint8_t> buffer;
+					auto len = DCCppClients[i].available();
+					auto read_dest = buffer.insert(buffer.end(), len + 1, 0);
+					auto added = DCCppClients[i].read(&*read_dest, len);
+					buffer.erase(read_dest + added, buffer.end()); //to handle if we got < len
+					//now, parse whats in buffer:
+					auto s = buffer.begin();
+					auto consumed = buffer.begin();
+					for(; s != buffer.end();) {
+						s = std::find(s, buffer.end(), '<');
+						auto e = std::find(s, buffer.end(), '>');
+						if(s != buffer.end() && e != buffer.end()) {
+							*e = 0;
+							String str(reinterpret_cast<char*>(&*s));
+							str += '>';
+							DCCppPendingCommands.push(std::move(str));
+							consumed = e;
 						}
+						s = e;
 					}
+					buffer.erase(buffer.begin(), consumed); // drop everything we used from the buffer.
 				}
 			}
 		}
@@ -661,7 +686,11 @@ void loop() {
 						SERIAL_LINK_DEV.print(F("0.0.0.0"));
 					}
 					SERIAL_LINK_DEV.print(F(" "));
+#ifndef ESP32
 					SERIAL_LINK_DEV.print(DCCppServer.status());
+#else
+					SERIAL_LINK_DEV.print(DCCppServer ? "1" : "0");
+#endif
 					SERIAL_LINK_DEV.println(F(">"));
 				}
 			} else if (currentDCCppCommand.startsWith(F("<a "))) {
@@ -866,7 +895,11 @@ void loop() {
 				}
 			}
 
-			if (DCCppServer.status() == LISTEN) {
+#ifndef ESP32
+	if (DCCppServer.status() == LISTEN) {
+#else
+	if (DCCppServer) {
+#endif
 				for (int i = 0; i < MAX_DCCPP_CLIENTS; i++) {
 					if (DCCppClients[i] && DCCppClients[i].connected()) {
 						DCCppClients[i].print(currentDCCppCommand);

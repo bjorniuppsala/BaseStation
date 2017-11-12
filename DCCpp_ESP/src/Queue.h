@@ -32,8 +32,8 @@
  *
  */
 
-#ifndef QUEUE_H
-#define QUEUE_H
+#ifndef FOO_QUEUE_H
+#define FOO_QUEUE_H
 
 #include <Arduino.h>
 
