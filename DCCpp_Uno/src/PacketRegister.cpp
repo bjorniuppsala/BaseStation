@@ -187,8 +187,9 @@ void RegisterList::writeTextPacket(const char *s) volatile{
   int nReg;
   byte b[6];
   int nBytes;
-  nBytes=sscanf(s,"%d %x %x %x %x %x",&nReg,b,b+1,b+2,b+3,b+4)-1;
-
+  unsigned int ub[6];
+  nBytes=sscanf(s,"%d %x %x %x %x %x",&nReg,ub,ub+1,ub+2,ub+3,ub+4)-1;
+  for(int i = 0; i < 6; ++i) b[i] = ub[i];
   if(nBytes<2 || nBytes>5){    // invalid valid packet
     CommManager::printf("<mInvalid Packet>");
     return;

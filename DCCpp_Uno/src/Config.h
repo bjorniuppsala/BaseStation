@@ -15,7 +15,7 @@ Part of DCC++ BASE STATION for the Arduino
 //  1 = POLOLU MC33926 MOTOR SHIELD   (MAX 28V/3A PER CHANNEL)
 //  2 = BTS7960B                      (MAX 27V/43A PER CHANNEL)
 
-#define MOTOR_SHIELD_TYPE   0
+#define MOTOR_SHIELD_TYPE   2
 
 /////////////////////////////////////////////////////////////////////////////////////
 //
@@ -33,7 +33,7 @@ Part of DCC++ BASE STATION for the Arduino
 //  3 = Seeed Studio Ethernet/SD-Card Shield W5200
 //  4 = ESP8266 WiFi module
 
-#define COMM_INTERFACE   1
+#define COMM_INTERFACE   0
 
 #if COMM_INTERFACE == 4
 	/////////////////////////////////////////////////////////////////////////////////////

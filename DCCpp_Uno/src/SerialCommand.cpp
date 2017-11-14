@@ -22,9 +22,11 @@ Part of DCC++ BASE STATION for the Arduino
 #include "EEStore.h"
 #include "CommInterface.h"
 #include "CurrentMonitor.h"
+#ifdef ARDUINO_ARCH_ESP32
 
+#else
 extern int __heap_start, *__brkval;
-
+#endif
 ///////////////////////////////////////////////////////////////////////////////
 
 volatile RegisterList *SerialCommand::mRegs;
@@ -365,7 +367,7 @@ void SerialCommand::parse(const char *com){
  *    changes the clock speed of the chip and the pre-scaler for the timers so that you can visually see the DCC signals flickering with an LED
  *    SERIAL COMMUNICAITON WILL BE INTERUPTED ONCE THIS COMMAND IS ISSUED - MUST RESET BOARD OR RE-OPEN SERIAL WINDOW TO RE-ESTABLISH COMMS
  */
-
+#if USE_DCC_GENERATOR_AVR
     Serial.println("\nEntering Diagnostic Mode...");
     delay(1000);
 
@@ -389,7 +391,7 @@ void SerialCommand::parse(const char *com){
 
     CLKPR=0x80;           // THIS SLOWS DOWN SYSYEM CLOCK BY FACTOR OF 256
     CLKPR=0x08;           // BOARD MUST BE RESET TO RESUME NORMAL OPERATIONS
-
+#endif
     break;
 
 /***** WRITE A DCC PACKET TO ONE OF THE REGSITERS DRIVING THE MAIN OPERATIONS TRACK  ****/
@@ -441,8 +443,10 @@ void SerialCommand::parse(const char *com){
  *     returns: <f MEM>
  *     where MEM is the number of free bytes remaining in the Arduino's SRAM
  */
+ #ifndef ARDUINO_ARCH_ESP32
       int v;
       CommManager::printf("<f%d>", (int) &v - (__brkval == 0 ? (int) &__heap_start : (int) __brkval));
+#endif
       break;
 
 /***** LISTS BIT CONTENTS OF ALL INTERNAL DCC PACKET REGISTERS  ****/

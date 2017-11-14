@@ -179,7 +179,7 @@ void Sensor::status(){
 
 void Sensor::parse(const char *c) {
   int n,s,m;
-  Sensor *t;
+  //Sensor *t;
 
   switch(sscanf(c,"%d %d %d",&n,&s,&m)){
 

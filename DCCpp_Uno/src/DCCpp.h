@@ -38,6 +38,7 @@ Part of DCC++ BASE STATION for the Arduino
     #error CANNOT COMPILE - DCC++ FOR THE UNO CAN ONLY USE SERIAL COMMUNICATION - PLEASE SELECT THIS IN THE CONFIG FILE
 
   #endif
+  #define USE_DCC_GENERATOR_AVR 1
 
 #elif defined  ARDUINO_AVR_MEGA2560
 
@@ -45,7 +46,17 @@ Part of DCC++ BASE STATION for the Arduino
 
   #define DCC_SIGNAL_PIN_MAIN 12          // Arduino Mega - uses OC1B
   #define DCC_SIGNAL_PIN_PROG 2           // Arduino Mega - uses OC3B
+  #define USE_DCC_GENERATOR_AVR 1
+#elif defined ARDUINO_ARCH_ESP32
+  #define ARDUINO_TYPE "ESP32"
 
+  //#define A0 34 //ADC1_6 n//These are just guesses from https://www.cnx-software.com/wp-content/uploads/2017/04/Hornbill-ESP32-Dev-Pinout.png
+  #define A1 A17 //ADC2_7
+
+  #define DCC_SIGNAL_PIN_MAIN 12          // Arduino Mega - uses OC1B
+  #define DCC_SIGNAL_PIN_PROG 2           // Arduino Mega - uses OC3B
+
+  #define USE_DCC_GENERATOR_ESP32 1
 #else
 
   #error CANNOT COMPILE - DCC++ ONLY WORKS WITH AN ARDUINO UNO OR AN ARDUINO MEGA 1280/2560
@@ -114,7 +125,7 @@ Part of DCC++ BASE STATION for the Arduino
 /////////////////////////////////////////////////////////////////////////////////////
 
 // If SHOW_PACKETS is set to 1, then for select main operations track commands that modify an internal DCC packet register,
-// if printFlag for that command is also set to 1, DCC++ BASE STATION will additionally return the 
+// if printFlag for that command is also set to 1, DCC++ BASE STATION will additionally return the
 // DCC packet contents of the modified register in the following format:
 
 //    <* REG: B1 B2 ... Bn CSUM / REPEAT>
@@ -125,7 +136,7 @@ Part of DCC++ BASE STATION for the Arduino
 //    Bn: the nth hexidecimal byte of the DCC packet
 //    CSUM: a checksum byte that is required to be the final byte in any DCC packet
 //    REPEAT: the number of times the DCC packet was re-transmitted to the tracks after its iniital transmission
- 
+
 #define SHOW_PACKETS  0       // set to zero to disable printing of every packet for select main operations track commands
 
 /////////////////////////////////////////////////////////////////////////////////////
@@ -138,4 +149,3 @@ extern LiquidCrystal_PCF8574 lcdDisplay;
 #endif
 
 #endif
-
