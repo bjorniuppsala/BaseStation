@@ -265,10 +265,12 @@ void setup(){
 
   EEStore::init();                                         // initialize and load Turnout and Sensor definitions stored in EEPROM
 
+  #ifndef ARDUINO_ARCH_ESP32
   pinMode(A5,INPUT);                                       // if pin A5 is grounded upon start-up, print system configuration and halt
   digitalWrite(A5,HIGH);
   if(!digitalRead(A5))
     showConfiguration();
+    #endif
 
   CommManager::printf("<iDCC++ BASE STATION FOR ARDUINO %s / %s: V-%s / %s %s>", ARDUINO_TYPE, MOTOR_SHIELD_NAME, VERSION, __DATE__, __TIME__);
 
