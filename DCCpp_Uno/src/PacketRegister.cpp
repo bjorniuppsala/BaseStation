@@ -45,7 +45,7 @@ void RegisterList::loadPacket(int nReg, byte *b, int nBytes, int nRepeat, int pr
 
   nReg=nReg%((maxNumRegs+1));          // force nReg to be between 0 and maxNumRegs, inclusive
 
-  while(nextReg!=NULL);              // pause while there is a Register already waiting to be updated -- nextReg will be reset to NULL by interrupt when prior Register updated fully processed
+  while(nextReg!=NULL) { /* nothing */};              // pause while there is a Register already waiting to be updated -- nextReg will be reset to NULL by interrupt when prior Register updated fully processed
 
   if(regMap[nReg]==NULL)              // first time this Register Number has been called
    regMap[nReg]=maxLoadedReg+1;       // set Register Pointer for this Register Number to next available Register

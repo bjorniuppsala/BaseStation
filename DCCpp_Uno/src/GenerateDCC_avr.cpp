@@ -4,9 +4,6 @@
 #include "GenerateDCC.h"
 #include "PacketRegister.h"
 
-extern volatile RegisterList mainRegs;    // create list of registers for MAX_MAIN_REGISTER Main Track Packets
-extern volatile RegisterList progRegs;
-
 namespace GenerateDCC {
 
     void setup()

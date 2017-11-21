@@ -27,9 +27,9 @@ struct Packet{
 }; // Packet
 
 struct Register{
-  Packet packet[2];
-  Packet *activePacket;
+  Packet *activePacket; // activePacket at offset 0 saves some instructions in the timer isr.
   Packet *updatePacket;
+  Packet packet[2];
   void initPackets();
 }; // Register
 
@@ -59,6 +59,36 @@ struct RegisterList{
   void writeCVByteMain(const char *) volatile;
   void writeCVBitMain(const char *s) volatile;
   void printPacket(int, byte *, int, int) volatile;
+
+  inline auto NextBit() volatile __attribute__ ((always_inline))
+  {
+      auto& R = *this;
+      auto currBitNo = R.currentBit;
+      auto packet = R.currentReg->activePacket;
+      if(currBitNo==packet->nBits){    /* IF no more bits in this DCC Packet */ \
+        currBitNo = R.currentBit=0;                           /*   reset current bit pointer and determine which Register and Packet to process next--- */ \
+        if(R.nRepeat>0 && R.currentReg==R.reg){               /*   IF current Register is first Register AND should be repeated */ \
+          R.nRepeat--;                                        /*     decrement repeat count; result is this same Packet will be repeated */ \
+        } else if(R.nextReg!=NULL){                           /*   ELSE IF another Register has been updated */ \
+          R.currentReg=R.nextReg;                             /*     update currentReg to nextReg */ \
+          R.nextReg=NULL;                                     /*     reset nextReg to NULL */ \
+          auto tmp =R.currentReg->activePacket;            /*     flip active and update Packets */ \
+          packet = R.currentReg->activePacket = R.currentReg->updatePacket; \
+          R.currentReg->updatePacket=tmp; \
+        } else{                                               /*   ELSE simply move to next Register */ \
+          if(R.currentReg==R.maxLoadedReg)                    /*     BUT IF this is last Register loaded */ \
+            R.currentReg=R.reg;                               /*       first reset currentReg to base Register, THEN */ \
+          R.currentReg++;
+            packet = R.currentReg->activePacket;/*     increment current Register (note this logic causes Register[0] to be skipped when simply cycling through all Registers) */ \
+        }                                                     /*   END-ELSE */ \
+      }
+      auto bit = packet->buf[currBitNo/8] & R.bitMask[currBitNo%8];
+      ++R.currentBit;
+      return bit;
+  }
 };
-  
+
+extern volatile RegisterList mainRegs;    // create list of registers for MAX_MAIN_REGISTER Main Track Packets
+extern volatile RegisterList progRegs;
+
 #endif
