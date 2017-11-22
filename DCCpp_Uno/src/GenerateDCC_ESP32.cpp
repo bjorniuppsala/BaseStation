@@ -7,10 +7,10 @@
 #include <atomic>
 #include <Arduino.h>
 constexpr uint16_t TIMER_DIVISOR = 80;  //1MHz (1us) timer count
-constexpr uint64_t ZERO_PERIOD = 58*100;    // 58us
-constexpr uint64_t ONE_PERIOD = 100*100;
+constexpr uint64_t ZERO_PERIOD = 58;    // 58us
+constexpr uint64_t ONE_PERIOD = 100;
 // each half-pulse should be 58us for a one and 100us for a zero
-//
+
 namespace GenerateDCC{
     namespace {
         struct Esp32Gen {
@@ -21,28 +21,28 @@ namespace GenerateDCC{
         };
 
         Esp32Gen generators[2];
+        volatile int isr_count = 0;
+
+        inline auto pinForTimer(int timerId)
+        { return timerId == 0? DCC_SIGNAL_PIN_MAIN : DCC_SIGNAL_PIN_PROG; }
 
         template<int timerId>
         void timerISR_full(void)
         {
             auto& gen = generators[timerId];
             auto& packetReg = timerId == 0 ? mainRegs : progRegs;
-            if(packetReg.NextBit()){ //high (one) bit
-                timerAlarmWrite(gen.timerMid, ONE_PERIOD, false);
-                timerAlarmWrite(gen.timerFull, ONE_PERIOD * 2, true);
-            } else {
-                timerAlarmWrite(gen.timerMid, ZERO_PERIOD, false);
-                timerAlarmWrite(gen.timerFull, ZERO_PERIOD * 2, true);
-            }
-            digitalWrite(timerId == 0? DCC_SIGNAL_PIN_MAIN : DCC_SIGNAL_PIN_PROG,
-                    HIGH);
+            auto period = packetReg.NextBit() ? ONE_PERIOD : ZERO_PERIOD;
+            timerAlarmWrite(gen.timerMid, period, false);
+            timerAlarmWrite(gen.timerFull, period * 2, true);
+            timerWrite(gen.timerMid, 0);
+            timerAlarmEnable(gen.timerMid);
+            digitalWrite(pinForTimer(timerId), HIGH);
         }
         template<int timerId>
         void timerISR_mid()
         {
-            digitalWrite(timerId == 0? DCC_SIGNAL_PIN_MAIN : DCC_SIGNAL_PIN_PROG,
-                LOW);
-                //CommManager::printf("Ho!\n");
+            ++isr_count;
+            digitalWrite(pinForTimer(timerId), LOW);
         }
 
         template<int timerId>
@@ -57,6 +57,7 @@ namespace GenerateDCC{
             timerMid = timerBegin(2*timerId+1, 80, /*countUp*/true);
             timerAttachInterrupt(timerMid, &timerISR_mid<timerId>, /*edge*/true);
             timerAlarmWrite(timerMid, ZERO_PERIOD, /*autoreload*/false);
+            timerWrite(timerMid, 0);
             timerAlarmEnable(timerMid);
         }
     }
@@ -65,10 +66,6 @@ namespace GenerateDCC{
         mainRegs.loadPacket(1,RegisterList::idlePacket,2,0);
         progRegs.loadPacket(1,RegisterList::idlePacket,2,0);    // load idle packet into register 1
 
-        for(int i = 0; i< 300; ++i)
-        {
-            CommManager::printf("Bit %d is %d gens: 0x%x 0x%x\n", i, mainRegs.NextBit(), generators, generators +1);
-        }
         pinMode(DIRECTION_MOTOR_CHANNEL_PIN_A,INPUT);      // ensure this pin is not active! Direction will be controlled by DCC SIGNAL instead (below)
         digitalWrite(DIRECTION_MOTOR_CHANNEL_PIN_A,LOW);
         pinMode(DCC_SIGNAL_PIN_MAIN, OUTPUT);      // THIS ARDUINO OUPUT PIN MUST BE PHYSICALLY CONNECTED TO THE PIN FOR DIRECTION-A OF MOTOR CHANNEL-A
@@ -82,10 +79,11 @@ namespace GenerateDCC{
 
     void loop()
     {
-        auto micros = timerRead(generators[1].timerFull);
-        CommManager::printf("timer read: %" PRIu64"\n", micros);
-
-
+        /*auto micros = timerRead(generators[1].timerMid);
+        auto config = timerGetConfig(generators[1].timerMid);
+        auto int_status = TIMERG0.int_st_timers.val;
+        CommManager::printf("timer read: %" PRIu64" confgi 0x%x int_Status = 0x%x isr_count = %d\n", micros, config, int_status,  isr_count);
+        */
     }
 }
 
