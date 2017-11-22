@@ -5,6 +5,7 @@
 #include "PacketRegister.h"
 #include <array>
 #include <atomic>
+#include <Arduino.h>
 constexpr uint16_t TIMER_DIVISOR = 80;  //1MHz (1us) timer count
 constexpr uint64_t ZERO_PERIOD = 58*100;    // 58us
 constexpr uint64_t ONE_PERIOD = 100*100;
@@ -14,7 +15,6 @@ namespace GenerateDCC{
     namespace {
         struct Esp32Gen {
             hw_timer_t* timerMid, *timerFull;
-            RegisterList* registerList;
 
             template<int timerId>
             void setupTimers();
@@ -22,23 +22,20 @@ namespace GenerateDCC{
 
         Esp32Gen generators[2];
 
-std::atomic<int> isr_count {0};
         template<int timerId>
         void timerISR_full(void)
         {
             auto& gen = generators[timerId];
-            auto& packetReg = *gen.registerList;
+            auto& packetReg = timerId == 0 ? mainRegs : progRegs;
             if(packetReg.NextBit()){ //high (one) bit
-                timerAlarmWrite(gen.timerMid, ONE_PERIOD/2, true);
-                timerAlarmWrite(gen.timerFull, ONE_PERIOD, false);
+                timerAlarmWrite(gen.timerMid, ONE_PERIOD, false);
+                timerAlarmWrite(gen.timerFull, ONE_PERIOD * 2, true);
             } else {
-                timerAlarmWrite(gen.timerMid, ZERO_PERIOD/2, true);
-                timerAlarmWrite(gen.timerFull, ZERO_PERIOD, false);
+                timerAlarmWrite(gen.timerMid, ZERO_PERIOD, false);
+                timerAlarmWrite(gen.timerFull, ZERO_PERIOD * 2, true);
             }
             digitalWrite(timerId == 0? DCC_SIGNAL_PIN_MAIN : DCC_SIGNAL_PIN_PROG,
                     HIGH);
-                    //CommManager::printf("Hi!\n");
-                    ++isr_count;
         }
         template<int timerId>
         void timerISR_mid()
@@ -70,7 +67,7 @@ std::atomic<int> isr_count {0};
 
         for(int i = 0; i< 300; ++i)
         {
-            CommManager::printf("Bit %d is %d\n", i, mainRegs.NextBit());
+            CommManager::printf("Bit %d is %d gens: 0x%x 0x%x\n", i, mainRegs.NextBit(), generators, generators +1);
         }
         pinMode(DIRECTION_MOTOR_CHANNEL_PIN_A,INPUT);      // ensure this pin is not active! Direction will be controlled by DCC SIGNAL instead (below)
         digitalWrite(DIRECTION_MOTOR_CHANNEL_PIN_A,LOW);
@@ -86,7 +83,7 @@ std::atomic<int> isr_count {0};
     void loop()
     {
         auto micros = timerRead(generators[1].timerFull);
-        CommManager::printf("timer read: %" PRIu64" isr_count=0x%x\n", micros, isr_count.load());
+        CommManager::printf("timer read: %" PRIu64"\n", micros);
 
 
     }

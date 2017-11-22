@@ -65,10 +65,11 @@ struct RegisterList{
       auto& R = *this;
       auto currBitNo = R.currentBit;
       auto packet = R.currentReg->activePacket;
-      if(currBitNo==packet->nBits){    /* IF no more bits in this DCC Packet */ \
-        currBitNo = R.currentBit=0;                           /*   reset current bit pointer and determine which Register and Packet to process next--- */ \
-        if(R.nRepeat>0 && R.currentReg==R.reg){               /*   IF current Register is first Register AND should be repeated */ \
-          R.nRepeat--;                                        /*     decrement repeat count; result is this same Packet will be repeated */ \
+      #if 0
+      if(currBitNo==packet->nBits){    /* IF no more bits in this DCC Packet */
+        currBitNo = R.currentBit=0;                           /*   reset current bit pointer and determine which Register and Packet to process next--- */
+        if(R.nRepeat>0 && R.currentReg==R.reg){               /*   IF current Register is first Register AND should be repeated */
+          R.nRepeat--;                                        /*     decrement repeat count; result is this same Packet will be repeated */
         } else if(R.nextReg!=NULL){                           /*   ELSE IF another Register has been updated */ \
           R.currentReg=R.nextReg;                             /*     update currentReg to nextReg */ \
           R.nextReg=NULL;                                     /*     reset nextReg to NULL */ \
@@ -80,10 +81,11 @@ struct RegisterList{
             R.currentReg=R.reg;                               /*       first reset currentReg to base Register, THEN */ \
           R.currentReg++;
             packet = R.currentReg->activePacket;/*     increment current Register (note this logic causes Register[0] to be skipped when simply cycling through all Registers) */ \
-        }                                                     /*   END-ELSE */ \
+        }
       }
+      #endif
       auto bit = packet->buf[currBitNo/8] & R.bitMask[currBitNo%8];
-      ++R.currentBit;
+      //++R.currentBit;
       return bit;
   }
 };
