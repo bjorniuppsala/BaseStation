@@ -42,7 +42,7 @@ RegisterList::RegisterList(int maxNumRegs){
 // BITSTREAM IS STORED IN UP TO A 10-BYTE ARRAY (USING AT MOST 76 OF 80 BITS)
 
 void RegisterList::loadPacket(int nReg, byte *b, int nBytes, int nRepeat, int printFlag) volatile {
-
+noInterrupts();
   nReg=nReg%((maxNumRegs+1));          // force nReg to be between 0 and maxNumRegs, inclusive
 
   while(nextReg!=NULL) { /* nothing */};              // pause while there is a Register already waiting to be updated -- nextReg will be reset to NULL by interrupt when prior Register updated fully processed
@@ -90,7 +90,7 @@ void RegisterList::loadPacket(int nReg, byte *b, int nBytes, int nRepeat, int pr
   nextReg=r;
   this->nRepeat=nRepeat;
   maxLoadedReg=max(maxLoadedReg,nextReg);
-
+interrupts();
   if(printFlag && SHOW_PACKETS)       // for debugging purposes
     printPacket(nReg,b,nBytes,nRepeat);
 
