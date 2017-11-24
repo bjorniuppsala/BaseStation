@@ -116,7 +116,7 @@ Part of DCC++ BASE STATION for the Arduino
 // SELECT COMMUNICATION INTERACE
 /////////////////////////////////////////////////////////////////////////////////////
 
-#if !defined(COMM_INTERFACE) || COMM_INTERFACE < 0 || COMM_INTERFACE > 4
+#if !defined(COMM_INTERFACE) || COMM_INTERFACE < 0 || COMM_INTERFACE > 5
   #error CANNOT COMPILE - Please select a proper value for COMM_INTERFACE in CONFIG.H file
 #endif
 

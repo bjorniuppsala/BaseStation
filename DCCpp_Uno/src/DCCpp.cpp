@@ -180,6 +180,7 @@ DCC++ BASE STATION is configured through the Config.h file that contains all use
 #include "CommInterfaceSerial.h"
 #include "CommInterfaceESP.h"
 #include "CommInterfaceEthernet.h"
+#include "CommInterfaceLocalWeb.h"
 #include "GenerateDCC.h"
 
 #ifdef ENABLE_LCD
@@ -248,7 +249,7 @@ void setup(){
   MotorBoardManager::registerBoard(CURRENT_MONITOR_PIN_PROG, SIGNAL_ENABLE_PIN_PROG, MOTOR_BOARD_TYPE::BTS7960B_5A, "PROG");
 #endif
 
-#if COMM_INTERFACE != 4 || (COMM_INTERFACE == 4 && !defined(USE_SERIAL_FOR_WIFI))
+#if COMM_INTERFACE < 4 || (COMM_INTERFACE == 4 && !defined(USE_SERIAL_FOR_WIFI))
   CommManager::registerInterface(new HardwareSerialInterface(Serial));
 #endif
 #if COMM_INTERFACE >= 1 && COMM_INTERFACE <= 3
@@ -261,6 +262,8 @@ void setup(){
   #else
     CommManager::registerInterface(new ESPHardwareSerialInterface(Serial1));
   #endif
+#elif COMM_INTERFACE == 5
+  CommManager::registerInterface(new LocalWebInterface());
 #endif
 
   EEStore::init();                                         // initialize and load Turnout and Sensor definitions stored in EEPROM
@@ -270,7 +273,7 @@ void setup(){
   digitalWrite(A5,HIGH);
   if(!digitalRead(A5))
     showConfiguration();
-    #endif
+  #endif
 
   CommManager::printf("<iDCC++ BASE STATION FOR ARDUINO %s / %s: V-%s / %s %s>", ARDUINO_TYPE, MOTOR_SHIELD_NAME, VERSION, __DATE__, __TIME__);
 
