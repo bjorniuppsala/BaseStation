@@ -42,14 +42,14 @@ RegisterList::RegisterList(int maxNumRegs){
 // BITSTREAM IS STORED IN UP TO A 10-BYTE ARRAY (USING AT MOST 76 OF 80 BITS)
 
 void RegisterList::loadPacket(int nReg, byte *b, int nBytes, int nRepeat, int printFlag) volatile {
-noInterrupts();
+
   nReg=nReg%((maxNumRegs+1));          // force nReg to be between 0 and maxNumRegs, inclusive
 
   while(nextReg!=NULL) { /* nothing */};              // pause while there is a Register already waiting to be updated -- nextReg will be reset to NULL by interrupt when prior Register updated fully processed
 
   if(regMap[nReg]==NULL)              // first time this Register Number has been called
    regMap[nReg]=maxLoadedReg+1;       // set Register Pointer for this Register Number to next available Register
-
+noInterrupts();
   Register *r=regMap[nReg];           // set Register to be updated
   Packet *p=r->updatePacket;          // set Packet in the Register to be updated
   byte *buf=p->buf;                   // set byte buffer in the Packet to be updated
@@ -87,8 +87,10 @@ noInterrupts();
     } // >4 bytes
   } // >3 bytes
 
-  nextReg=r;
-  this->nRepeat=nRepeat;
+	if(nextReg == nullptr) {
+	  nextReg=r;
+	  this->nRepeat=nRepeat;
+	}
   maxLoadedReg=max(maxLoadedReg,nextReg);
 interrupts();
   if(printFlag && SHOW_PACKETS)       // for debugging purposes
@@ -125,9 +127,9 @@ void RegisterList::setThrottle(const char *s) volatile{
   }
 
   loadPacket(nReg,b,nB,0,1);
-
+Serial.printf("set throttle done.%d %d %d %d\n", nReg, cab, tSpeed, tDirection);
   CommManager::printf("<T %d %d %d>", nReg, tSpeed, tDirection);
-
+Serial.printf("set throttle sent.%d %d %d %d\n", nReg, cab, tSpeed, tDirection);
   speedTable[nReg]=tDirection==1?tSpeed:-tSpeed;
 
 } // RegisterList::setThrottle()

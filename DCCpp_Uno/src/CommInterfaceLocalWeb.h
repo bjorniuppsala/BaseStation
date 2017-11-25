@@ -11,6 +11,8 @@
 
 #if COMM_INTERFACE == 5
 #include "CommInterface.h"
+#include <Arduino.h>
+
 class LocalWebInterface : public CommInterface {
 public:
 	LocalWebInterface();
@@ -18,6 +20,9 @@ public:
 	virtual void showConfiguration() override;
 	virtual void showInitInfo() override;
 	virtual void send(const char *buf);
+private:
+	bool inCommandPayload = false;
+	String buffer;
 };
 
 #endif

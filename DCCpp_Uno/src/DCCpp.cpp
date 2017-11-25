@@ -201,10 +201,23 @@ volatile RegisterList progRegs(2);                     // create a shorter list 
 ///////////////////////////////////////////////////////////////////////////////
 
 void loop(){
+	static auto last = millis();
+	auto start = micros();
+	bool log = (last) < millis();
+	if(log)
+	{
+		Serial.printf("looping!  pending elapsed=%d\n", micros() - start);
+		last = millis();
+	}
   CommManager::update();      // check for and process any new commands
+  if(log) Serial.printf("motorboardmanager elapsed=%d\n", micros() - start);
   MotorBoardManager::check();
+  if(log) Serial.printf("sensor elapsed=%d\n", micros() - start);
   Sensor::check();    // check sensors for activate/de-activate
+  if(log) Serial.printf("generatedccelapsed=%d\n", micros() - start);
   GenerateDCC::loop();
+  if(log) Serial.printf("doneelapsed=%d\n", micros() - start);
+
 } // loop
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -212,7 +225,9 @@ void loop(){
 ///////////////////////////////////////////////////////////////////////////////
 
 void setup(){
-
+#if COMM_INTERFACE == 5
+    Serial.begin(115200);
+#endif
 #ifdef ENABLE_LCD
   Wire.begin();
   // Check that we can find the LCD by its address before attempting to use it.

@@ -54,9 +54,10 @@ class Queue {
     ~Queue() {
       delete[] _data;
     }
-    inline int count();
-    inline int front();
-    inline int back();
+	inline bool empty() const { return count() == 0;}
+    inline int count() const;
+    inline int front() const;
+    inline int back() const;
     void push(const T &item);
     T peek();
     T pop();
@@ -64,19 +65,19 @@ class Queue {
 };
 
 template<class T>
-inline int Queue<T>::count()
+inline int Queue<T>::count() const
 {
   return _count;
 }
 
 template<class T>
-inline int Queue<T>::front()
+inline int Queue<T>::front() const
 {
   return _front;
 }
 
 template<class T>
-inline int Queue<T>::back()
+inline int Queue<T>::back() const
 {
   return _back;
 }

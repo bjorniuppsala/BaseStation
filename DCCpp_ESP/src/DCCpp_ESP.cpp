@@ -29,6 +29,10 @@
 #include "Turnout.h"
 #include "ProgramRequest.h"
 
+#include <StreamString.h>
+#include <mutex>
+#include <freertos/semphr.h>
+
 #define UNUSED(x) (void)(x)
 namespace {
 WiFiServer DCCppServer(DCCPP_CLIENT_PORT);
@@ -36,9 +40,24 @@ WiFiClient DCCppClients[MAX_DCCPP_CLIENTS];
 AsyncWebServer webServer(80);
 AsyncWebSocket webSocket("/ws");
 
-Queue<String> DCCppPendingCommands(64);  // to be sent over SERIAL_LINK§
-String currentDCCppCommand = "";
+struct PendingQueue {
+	SemaphoreHandle_t m = xSemaphoreCreateMutex();
+	Queue<String> q{64};
+	auto acquire() { return std::unique_lock<PendingQueue>{ *this };}
+	bool empty() const { return q.empty(); }
+	auto pop() { return q.pop(); }
+	void push(String s) { auto l = acquire(); q.push(std::move(s)); }
+	auto count() { auto l = acquire(); return q.count();}
+	void lock() {xSemaphoreTake(m, portMAX_DELAY);}
+	void unlock() {xSemaphoreGive(m);}
+};
 
+PendingQueue DCCppPendingCommands;
+
+Print* write_to_dccpp;
+Stream* read_from_dccpp;
+
+String currentDCCppCommand = "";
 bool inDCCPPCommand = false;
 
 const char * espBuildTime = __DATE__ " " __TIME__ " GMT";
@@ -120,11 +139,57 @@ void turnoutStatusCallback() {
 		DCCppPendingCommands.push(F("<T>"));
 	}
 }
+class PartialCommandParser {
+	std::vector<uint8_t> buffer;
+public:
+	auto alloc_push(size_t len)
+	{
+		auto read_dest = buffer.insert(buffer.end(), len + 1, 0);
+		return read_dest;
+	}
+	void commit_push(std::vector<uint8_t>::iterator read_dest, size_t added)
+	{
+		buffer.erase(read_dest + added, buffer.end()); //to handle if we got < len
+		handle_content();
+	}
+	void push_back(uint8_t* data, size_t len)
+	{
+		buffer.insert(buffer.end(), data, data + len);
+		handle_content();
+	}
 
+	void handle_content()
+	{
+		auto s = buffer.begin();
+		auto consumed = buffer.begin();
+		for(; s != buffer.end();) {
+			s = std::find(s, buffer.end(), '<');
+			auto e = std::find(s, buffer.end(), '>');
+			if(s != buffer.end() && e != buffer.end()) {
+				*e = 0;
+				String str(reinterpret_cast<char*>(&*s));
+				str += '>';
+				Serial.printf("pushing command to pending: '%s' no of pending: %d\n", str.c_str(), DCCppPendingCommands.count());
+				DCCppPendingCommands.push(std::move(str));
+				consumed = e + 1; // + 1 to include the '>'
+			}
+			s = e;
+		}
+		buffer.erase(buffer.begin(), consumed); // drop everything we used from the buffer.
+	}
+
+	void clear()
+	{
+		buffer.clear();
+		if(buffer.capacity() > 64)
+		buffer.shrink_to_fit();
+	}
+	auto size() const { return buffer.size(); }
+};
 struct WebSocketClient {
 	bool used;
 	uint32_t id;
-	String partialCommand;
+	PartialCommandParser partialCommand;
 };
 WebSocketClient webSocketClients[MAX_WEBSOCKET_CLIENTS];
 
@@ -147,7 +212,7 @@ void onWSEvent(AsyncWebSocket * server, AsyncWebSocketClient * client,
 		for (int index = 0; index < MAX_WEBSOCKET_CLIENTS; index++) {
 			if (webSocketClients[index].id == client->id()) {
 				webSocketClients[index].used = false;
-				webSocketClients[index].partialCommand = "";
+				webSocketClients[index].partialCommand.clear();
 			}
 		}
 	} else if (type == WS_EVT_DATA) {
@@ -157,23 +222,7 @@ void onWSEvent(AsyncWebSocket * server, AsyncWebSocketClient * client,
 				clientIndex = index;
 			}
 		}
-		String message = String((char *) data);
-		message[len] = '\0';
-		webSocketClients[clientIndex].partialCommand += message;
-		size_t baseOffs = 0;
-		for (size_t index = 0;
-				index <= webSocketClients[clientIndex].partialCommand.length();
-				index++) {
-			if (webSocketClients[clientIndex].partialCommand[baseOffs] == '<'
-					&& webSocketClients[clientIndex].partialCommand[index]
-							== '>') {
-				DCCppPendingCommands.push(
-						webSocketClients[clientIndex].partialCommand.substring(
-								baseOffs, index + 1));
-				baseOffs = index + 1;
-			}
-		}
-		webSocketClients[clientIndex].partialCommand.remove(0, baseOffs);
+		webSocketClients[clientIndex].partialCommand.push_back(data, len);
 	}
 }
 
@@ -451,7 +500,8 @@ void handleOutputs(AsyncWebServerRequest *request) {
 	}
 }
 
-void handleSensors(AsyncWebServerRequest *request) {
+void handleSensors(AsyncWebServerRequest *request)
+{
 	auto jsonResponse = new AsyncJsonResponse(true);
 	if (request->method() == HTTP_GET) {
 		JsonArray &array = jsonResponse->getRoot();
@@ -493,14 +543,372 @@ void handleSensors(AsyncWebServerRequest *request) {
 		}
 	}
 }
+
+void loop_DCCppServer()
+{
+	if (DCCppServer.hasClient()) {
+		for (int i = 0; i < MAX_DCCPP_CLIENTS; i++) {
+			if (!DCCppClients[i] || !DCCppClients[i].connected()) {
+				if (DCCppClients[i]) {
+					DCCppClients[i].stop();
+				}
+				DCCppClients[i] = DCCppServer.available();
+				continue;
+			}
+		}
+		DCCppServer.available().stop();
+	}
+	//check clients for data
+	for (int i = 0; i < MAX_DCCPP_CLIENTS; i++) {
+		if (DCCppClients[i]
+			&& DCCppClients[i].connected()
+			&& DCCppClients[i].available()) {
+			static PartialCommandParser buffer;
+			auto len = DCCppClients[i].available();
+			auto read_dest = buffer.alloc_push(len);
+			auto added = DCCppClients[i].read(&*read_dest, len);
+			buffer.commit_push(read_dest, added);
+		}
+	}
+}
+
+void loop_incoming_from_dcc_generator()
+{
+	while (read_from_dccpp->available()) {
+		char ch = read_from_dccpp->read();
+		if (!inDCCPPCommand && ch == '<') {
+			inDCCPPCommand = true;
+		}
+		if (inDCCPPCommand) {
+			currentDCCppCommand += ch;
+		}
+		if (inDCCPPCommand && ch == '>') {
+			Serial.println(String("got command: ") + currentDCCppCommand);
+			inDCCPPCommand = false;
+			if (currentDCCppCommand.startsWith(F("<iESP-"))) {
+				if (currentDCCppCommand.indexOf(F("connect")) > 0) {
+					size_t firstSpace = currentDCCppCommand.indexOf(' ');
+					size_t secondSpace = currentDCCppCommand.indexOf(' ',
+							firstSpace + 1);
+					long ssidLength = currentDCCppCommand.substring(
+							firstSpace + 1, secondSpace).toInt();
+					firstSpace = secondSpace++;
+					secondSpace += ssidLength;
+					String ssid = currentDCCppCommand.substring(firstSpace + 1,
+							secondSpace);
+					String password = currentDCCppCommand.substring(
+							secondSpace + 1, currentDCCppCommand.length() - 1);
+					WiFi.setAutoReconnect(false);
+					write_to_dccpp->print(F("<iESP connecting to "));
+					write_to_dccpp->print(ssid);
+					write_to_dccpp->println(F(">"));
+					WiFi.begin(ssid.c_str(), password.c_str());
+					bool connecting = true;
+					// ~30sec timeout
+					int connectTimeout = 120;
+					while (connecting && connectTimeout) {
+						connectTimeout--;
+						delay(250);
+						switch (WiFi.status()) {
+						case WL_CONNECTED:
+							write_to_dccpp->print(F("<iESP connected "));
+							write_to_dccpp->print(WiFi.localIP());
+							write_to_dccpp->println(F(">"));
+							WiFi.setAutoReconnect(true);
+							connecting = false;
+							break;
+						case WL_CONNECT_FAILED:
+							write_to_dccpp->println(F("<iESP connect failed>"));
+							connecting = false;
+							break;
+						case WL_DISCONNECTED:
+							// ignoring this as we get this status until it either succeeds or fails.
+							break;
+						case WL_NO_SSID_AVAIL:
+							write_to_dccpp->println(F("<iESP AP not found>"));
+							connecting = false;
+							break;
+						default:
+							write_to_dccpp->print(F("<iESP status "));
+							write_to_dccpp->print(WiFi.status());
+							write_to_dccpp->println(F(">"));
+							break;
+						}
+					}
+					if (WiFi.status() != WL_CONNECTED && !connectTimeout) {
+						write_to_dccpp->println(F("<iESP connect timeout>"));
+					}
+				} else if (currentDCCppCommand.indexOf(F("start")) > 0) {
+					DCCppServer.begin();
+					webServer.begin();
+					MDNS.begin(HOSTNAME);
+					taskScheduler.enableAll();
+					write_to_dccpp->println(F("<iESP ready>"));
+				} else if (currentDCCppCommand.indexOf(F("stop")) > 0) {
+					taskScheduler.disableAll();
+					DCCppServer.stop();
+					write_to_dccpp->println(F("<iESP shutdown>"));
+				} else if (currentDCCppCommand.indexOf(F("reset")) > 0) {
+					ESP.restart();
+				} else if (currentDCCppCommand.indexOf(F("ip")) > 0) {
+					write_to_dccpp->print(F("<iESP ip "));
+					if (WiFi.status() == WL_CONNECTED) {
+						write_to_dccpp->print(WiFi.localIP());
+					} else {
+						write_to_dccpp->print(F("0.0.0.0"));
+					}
+					write_to_dccpp->println(F(">"));
+				} else if (currentDCCppCommand.indexOf(F("scan")) > 0) {
+					int networkCount = WiFi.scanNetworks();
+					for (int net = 0; net < networkCount; net++) {
+						write_to_dccpp->print(F("<iESP-network: "));
+						write_to_dccpp->print(WiFi.SSID(net));
+						write_to_dccpp->println(F(">"));
+					}
+				} else if (currentDCCppCommand.indexOf(F("status")) > 0) {
+					write_to_dccpp->print(F("<iESP-status "));
+					write_to_dccpp->print(WiFi.status());
+					write_to_dccpp->print(F(" "));
+					if (WiFi.status() == WL_CONNECTED) {
+						write_to_dccpp->print(WiFi.localIP());
+					} else {
+						write_to_dccpp->print(F("0.0.0.0"));
+					}
+					write_to_dccpp->print(F(" "));
+#ifndef ESP32
+					write_to_dccpp->print(DCCppServer.status());
+#else
+					write_to_dccpp->print(DCCppServer ? "1" : "0");
+#endif
+					write_to_dccpp->println(F(">"));
+				}
+			} else if (currentDCCppCommand.startsWith(F("<a "))) {
+				// parse current details so we can display it
+				if (currentDCCppCommand.lastIndexOf(' ') > 2) {
+					int powerUsage = currentDCCppCommand.substring(2,
+							currentDCCppCommand.lastIndexOf(' ')).toInt();
+					String districtName = currentDCCppCommand.substring(
+							currentDCCppCommand.lastIndexOf(' '),
+							currentDCCppCommand.length() - 1);
+					districtName.trim();
+					//write_to_dccpp->printf("DETECTED: %s / %d", districtName.c_str(), powerUsage);
+					bool districtFound = false;
+					for (const auto& node : powerDistricts) {
+						if (node->getDistrictName() == districtName) {
+							districtFound = true;
+							node->setPowerUsage(powerUsage);
+						}
+					}
+					if (!districtFound) {
+						powerDistricts.add(
+								new PowerDistrict(districtName, true,
+										powerUsage));
+					}
+					//} else {
+					//	write_to_dccpp->printf("UNABLE TO PARSE: %s", currentDCCppCommand.c_str());
+				}
+			} else if (currentDCCppCommand.startsWith(F("<p"))) {
+				// parse power district status
+				bool districtOn = currentDCCppCommand[2] == '1';
+				bool districtOverPower = (currentDCCppCommand[2] == '2');
+				String districtName = currentDCCppCommand.substring(
+						currentDCCppCommand.lastIndexOf(' '),
+						currentDCCppCommand.length() - 1);
+				districtName.trim();
+				bool districtFound = false;
+				for (const auto& node : powerDistricts) {
+					if (node->getDistrictName() == districtName) {
+						districtFound = true;
+						node->setOverCurrent(districtOverPower);
+						node->setCurrentState(districtOn);
+					}
+				}
+				if (!districtFound) {
+					powerDistricts.add(
+							new PowerDistrict(districtName, districtOn, 0,
+									districtOverPower));
+				}
+			} else if (currentDCCppCommand.equals(F("<0>"))) {
+				// mark track power status as off
+				for (const auto& node : powerDistricts) {
+					node->setCurrentState(false);
+				}
+			} else if (currentDCCppCommand.equals(F("<1>"))) {
+				// mark track power status as on
+				for (const auto& node : powerDistricts) {
+					node->setCurrentState(true);
+					node->setOverCurrent(false);
+				}
+			} else if (currentDCCppCommand.startsWith(F("<q "))
+					|| currentDCCppCommand.startsWith(F("<Q "))) {
+				// sensor parsing
+				int firstSpace = currentDCCppCommand.indexOf(' ');
+				if (currentDCCppCommand.lastIndexOf(' ') > 2) {
+					// <Q ID PIN PULLUP>
+					int secondSpace = currentDCCppCommand.indexOf(' ',
+							firstSpace + 1);
+					int thirdSpace = currentDCCppCommand.indexOf(' ',
+							secondSpace + 1);
+					int sensorID = currentDCCppCommand.substring(firstSpace,
+							secondSpace).toInt();
+					int sensorPin = currentDCCppCommand.substring(secondSpace,
+							thirdSpace).toInt();
+					bool sensorPullUp =
+							currentDCCppCommand.substring(thirdSpace,
+									currentDCCppCommand.length() - 1).toInt()
+									== 1;
+					bool sensorFound = false;
+					for (const auto& node : sensors) {
+						if (node->getId() == sensorID) {
+							sensorFound = true;
+						}
+					}
+					if (!sensorFound) {
+						sensors.add(
+								new Sensor(sensorID, sensorPin, false,
+										sensorPullUp));
+					}
+				} else {
+					// <q ID> or <Q ID>
+					int sensorID = currentDCCppCommand.substring(firstSpace,
+							currentDCCppCommand.length() - 1).toInt();
+					bool sensorActive = currentDCCppCommand[1] == 'Q';
+					bool sensorFound = false;
+					for (const auto& node : sensors) {
+						if (node->getId() == sensorID) {
+							sensorFound = true;
+							node->setActive(sensorActive);
+						}
+					}
+					if (!sensorFound) {
+						forceRefreshSensors = true;
+					}
+				}
+			} else if (currentDCCppCommand.startsWith(F("<H "))) {
+				// turnout parsing
+				int firstSpace = currentDCCppCommand.indexOf(' ');
+				int secondSpace = currentDCCppCommand.indexOf(' ',
+						firstSpace + 1);
+				int turnoutID = currentDCCppCommand.substring(firstSpace,
+						secondSpace).toInt();
+				if (currentDCCppCommand.lastIndexOf(' ') > secondSpace) {
+					int thirdSpace = currentDCCppCommand.indexOf(' ',
+							secondSpace + 1);
+					int fourthSpace = currentDCCppCommand.indexOf(' ',
+							thirdSpace + 1);
+					int address = currentDCCppCommand.substring(secondSpace + 1,
+							thirdSpace).toInt();
+					int subAddress = currentDCCppCommand.substring(
+							thirdSpace + 1, fourthSpace).toInt();
+					bool state = currentDCCppCommand.substring(fourthSpace + 1,
+							currentDCCppCommand.length() - 1).toInt() == 1;
+					bool foundTurnout = false;
+					for (const auto& node : turnouts) {
+						if (node->getId() == turnoutID) {
+							node->setThrown(state);
+							foundTurnout = true;
+						}
+					}
+					if (!foundTurnout) {
+						turnouts.add(
+								new Turnout(turnoutID, address, subAddress,
+										state));
+					}
+				} else {
+					bool state = currentDCCppCommand.substring(secondSpace + 1,
+							currentDCCppCommand.length() - 1).toInt() == 1;
+					for (const auto& node : turnouts) {
+						if (node->getId() == turnoutID) {
+							node->setThrown(state);
+						}
+					}
+				}
+			} else if (currentDCCppCommand.startsWith(F("<Y "))) {
+				// outputs parsing
+				int firstSpace = currentDCCppCommand.indexOf(' ');
+				int secondSpace = currentDCCppCommand.indexOf(' ',
+						firstSpace + 1);
+				int outputID = currentDCCppCommand.substring(firstSpace,
+						secondSpace).toInt();
+				if (currentDCCppCommand.lastIndexOf(' ') > secondSpace) {
+					int thirdSpace = currentDCCppCommand.indexOf(' ',
+							secondSpace + 1);
+					int fourthSpace = currentDCCppCommand.indexOf(' ',
+							thirdSpace + 1);
+					int pinID = currentDCCppCommand.substring(secondSpace,
+							thirdSpace).toInt();
+					bool inverted = currentDCCppCommand.substring(
+							thirdSpace + 1, fourthSpace).toInt() == 1;
+					bool active = currentDCCppCommand.substring(fourthSpace + 1,
+							currentDCCppCommand.length() - 1).toInt() == 1;
+					bool foundOutput = false;
+					for (const auto& node : outputs) {
+						if (node->getId() == outputID) {
+							node->setActive(active);
+							foundOutput = true;
+						}
+					}
+					if (!foundOutput) {
+						outputs.add(
+								new Output(outputID, pinID, inverted, active));
+					}
+				} else {
+					bool active = currentDCCppCommand.substring(secondSpace + 1,
+							currentDCCppCommand.length() - 1).toInt() == 1;
+					for (const auto& node : outputs) {
+						if (node->getId() == outputID) {
+							node->setActive(active);
+						}
+					}
+				}
+			} else if (currentDCCppCommand.startsWith(F("<r"))) {
+				// <rCALLBACK|CALLBACKSUB|CV Value>
+				// <rCALLBACK|CALLBACKSUB|CV VALUE>
+				// <rCALLBACK|CALLBACKSUB|CV BIT VALUE>
+				int firstPipe = currentDCCppCommand.indexOf('|');
+				int secondPipe = currentDCCppCommand.indexOf('|',
+						firstPipe + 1);
+				int lastSpace = currentDCCppCommand.lastIndexOf(' ');
+				int callbackNumber =
+						currentDCCppCommand.substring(2, firstPipe).toInt();
+				int callbackSubNumber = currentDCCppCommand.substring(
+						firstPipe + 1, secondPipe).toInt();
+				for (const auto& node : progRequests) {
+					if (node->getCallbackNumber() == callbackNumber
+							&& node->getCallbackSubNumber()
+									== callbackSubNumber) {
+						node->setValue(
+								currentDCCppCommand.substring(lastSpace + 1,
+										currentDCCppCommand.length() - 1).toInt());
+					}
+				}
+			}
+
+		#ifndef ESP32
+			if (DCCppServer.status() == LISTEN) {
+		#else
+			if (DCCppServer) {
+		#endif
+				for (int i = 0; i < MAX_DCCPP_CLIENTS; i++) {
+					if (DCCppClients[i] && DCCppClients[i].connected()) {
+						DCCppClients[i].print(currentDCCppCommand);
+						delay(1);
+					}
+				}
+				webSocket.textAll(currentDCCppCommand);
+			}
+			currentDCCppCommand = "";
+		}
+	}
+}
 }
 
 namespace DCCpp {
     namespace Server {
-		Stream* dccpp_stream;
-		void setup(Stream& theStream)
+		void setup(Stream& read_from, Print& write_to)
 		{
-			dccpp_stream = &theStream;
+			write_to_dccpp = &write_to;
+			read_from_dccpp = &read_from;
 			SPIFFS.begin();
 		#ifndef ESP32
 			WiFi.setAutoConnect(false);
@@ -537,7 +945,7 @@ namespace DCCpp {
 			// TBD : WiThrottle support
 			//MDNS.addService("_withrottle", "tcp", 81);
 			//MDNS.addServiceTxt("_withrottle", "tcp", "jmri", "4.5.7");
-			dccpp_stream->println(F("<iESP-DCC++ init>"));
+			write_to_dccpp->println(F("<iESP-DCC++ init>"));
 		}
 
 		void loop() {
@@ -547,376 +955,15 @@ namespace DCCpp {
 			#else
 			if (DCCppServer) {
 			#endif
-				if (DCCppServer.hasClient()) {
-					for (int i = 0; i < MAX_DCCPP_CLIENTS; i++) {
-						if (!DCCppClients[i] || !DCCppClients[i].connected()) {
-							if (DCCppClients[i]) {
-								DCCppClients[i].stop();
-							}
-							DCCppClients[i] = DCCppServer.available();
-							continue;
-						}
-					}
-					DCCppServer.available().stop();
-				}
-				//check clients for data
-				for (int i = 0; i < MAX_DCCPP_CLIENTS; i++) {
-					if (DCCppClients[i] && DCCppClients[i].connected()) {
-						if (DCCppClients[i].available()) {
-							static std::vector<uint8_t> buffer;
-							auto len = DCCppClients[i].available();
-							auto read_dest = buffer.insert(buffer.end(), len + 1, 0);
-							auto added = DCCppClients[i].read(&*read_dest, len);
-							buffer.erase(read_dest + added, buffer.end()); //to handle if we got < len
-							//now, parse whats in buffer:
-							auto s = buffer.begin();
-							auto consumed = buffer.begin();
-							for(; s != buffer.end();) {
-								s = std::find(s, buffer.end(), '<');
-								auto e = std::find(s, buffer.end(), '>');
-								if(s != buffer.end() && e != buffer.end()) {
-									*e = 0;
-									String str(reinterpret_cast<char*>(&*s));
-									str += '>';
-									DCCppPendingCommands.push(std::move(str));
-									consumed = e;
-								}
-								s = e;
-							}
-							buffer.erase(buffer.begin(), consumed); // drop everything we used from the buffer.
-						}
-					}
-				}
+				loop_DCCppServer();
 			}
 			//check UART for data
-			while (dccpp_stream->available()) {
-				char ch = dccpp_stream->read();
-				if (!inDCCPPCommand && ch == '<') {
-					inDCCPPCommand = true;
-				}
-				if (inDCCPPCommand) {
-					currentDCCppCommand += ch;
-				}
-				if (inDCCPPCommand && ch == '>') {
-					inDCCPPCommand = false;
-					if (currentDCCppCommand.startsWith(F("<iESP-"))) {
-						if (currentDCCppCommand.indexOf(F("connect")) > 0) {
-							size_t firstSpace = currentDCCppCommand.indexOf(' ');
-							size_t secondSpace = currentDCCppCommand.indexOf(' ',
-									firstSpace + 1);
-							long ssidLength = currentDCCppCommand.substring(
-									firstSpace + 1, secondSpace).toInt();
-							firstSpace = secondSpace++;
-							secondSpace += ssidLength;
-							String ssid = currentDCCppCommand.substring(firstSpace + 1,
-									secondSpace);
-							String password = currentDCCppCommand.substring(
-									secondSpace + 1, currentDCCppCommand.length() - 1);
-							WiFi.setAutoReconnect(false);
-							dccpp_stream->print(F("<iESP connecting to "));
-							dccpp_stream->print(ssid);
-							dccpp_stream->println(F(">"));
-							WiFi.begin(ssid.c_str(), password.c_str());
-							bool connecting = true;
-							// ~30sec timeout
-							int connectTimeout = 120;
-							while (connecting && connectTimeout) {
-								connectTimeout--;
-								delay(250);
-								switch (WiFi.status()) {
-								case WL_CONNECTED:
-									dccpp_stream->print(F("<iESP connected "));
-									dccpp_stream->print(WiFi.localIP());
-									dccpp_stream->println(F(">"));
-									WiFi.setAutoReconnect(true);
-									connecting = false;
-									break;
-								case WL_CONNECT_FAILED:
-									dccpp_stream->println(F("<iESP connect failed>"));
-									connecting = false;
-									break;
-								case WL_DISCONNECTED:
-									// ignoring this as we get this status until it either succeeds or fails.
-									break;
-								case WL_NO_SSID_AVAIL:
-									dccpp_stream->println(F("<iESP AP not found>"));
-									connecting = false;
-									break;
-								default:
-									dccpp_stream->print(F("<iESP status "));
-									dccpp_stream->print(WiFi.status());
-									dccpp_stream->println(F(">"));
-									break;
-								}
-							}
-							if (WiFi.status() != WL_CONNECTED && !connectTimeout) {
-								dccpp_stream->println(F("<iESP connect timeout>"));
-							}
-						} else if (currentDCCppCommand.indexOf(F("start")) > 0) {
-							DCCppServer.begin();
-							webServer.begin();
-							MDNS.begin(HOSTNAME);
-							taskScheduler.enableAll();
-							dccpp_stream->println(F("<iESP ready>"));
-						} else if (currentDCCppCommand.indexOf(F("stop")) > 0) {
-							taskScheduler.disableAll();
-							DCCppServer.stop();
-							dccpp_stream->println(F("<iESP shutdown>"));
-						} else if (currentDCCppCommand.indexOf(F("reset")) > 0) {
-							ESP.restart();
-						} else if (currentDCCppCommand.indexOf(F("ip")) > 0) {
-							dccpp_stream->print(F("<iESP ip "));
-							if (WiFi.status() == WL_CONNECTED) {
-								dccpp_stream->print(WiFi.localIP());
-							} else {
-								dccpp_stream->print(F("0.0.0.0"));
-							}
-							dccpp_stream->println(F(">"));
-						} else if (currentDCCppCommand.indexOf(F("scan")) > 0) {
-							int networkCount = WiFi.scanNetworks();
-							for (int net = 0; net < networkCount; net++) {
-								dccpp_stream->print(F("<iESP-network: "));
-								dccpp_stream->print(WiFi.SSID(net));
-								dccpp_stream->println(F(">"));
-							}
-						} else if (currentDCCppCommand.indexOf(F("status")) > 0) {
-							dccpp_stream->print(F("<iESP-status "));
-							dccpp_stream->print(WiFi.status());
-							dccpp_stream->print(F(" "));
-							if (WiFi.status() == WL_CONNECTED) {
-								dccpp_stream->print(WiFi.localIP());
-							} else {
-								dccpp_stream->print(F("0.0.0.0"));
-							}
-							dccpp_stream->print(F(" "));
-		#ifndef ESP32
-							dccpp_stream->print(DCCppServer.status());
-		#else
-							dccpp_stream->print(DCCppServer ? "1" : "0");
-		#endif
-							dccpp_stream->println(F(">"));
-						}
-					} else if (currentDCCppCommand.startsWith(F("<a "))) {
-						// parse current details so we can display it
-						if (currentDCCppCommand.lastIndexOf(' ') > 2) {
-							int powerUsage = currentDCCppCommand.substring(2,
-									currentDCCppCommand.lastIndexOf(' ')).toInt();
-							String districtName = currentDCCppCommand.substring(
-									currentDCCppCommand.lastIndexOf(' '),
-									currentDCCppCommand.length() - 1);
-							districtName.trim();
-							//dccpp_stream->printf("DETECTED: %s / %d", districtName.c_str(), powerUsage);
-							bool districtFound = false;
-							for (const auto& node : powerDistricts) {
-								if (node->getDistrictName() == districtName) {
-									districtFound = true;
-									node->setPowerUsage(powerUsage);
-								}
-							}
-							if (!districtFound) {
-								powerDistricts.add(
-										new PowerDistrict(districtName, true,
-												powerUsage));
-							}
-							//} else {
-							//	dccpp_stream->printf("UNABLE TO PARSE: %s", currentDCCppCommand.c_str());
-						}
-					} else if (currentDCCppCommand.startsWith(F("<p"))) {
-						// parse power district status
-						bool districtOn = currentDCCppCommand[2] == '1';
-						bool districtOverPower = (currentDCCppCommand[2] == '2');
-						String districtName = currentDCCppCommand.substring(
-								currentDCCppCommand.lastIndexOf(' '),
-								currentDCCppCommand.length() - 1);
-						districtName.trim();
-						bool districtFound = false;
-						for (const auto& node : powerDistricts) {
-							if (node->getDistrictName() == districtName) {
-								districtFound = true;
-								node->setOverCurrent(districtOverPower);
-								node->setCurrentState(districtOn);
-							}
-						}
-						if (!districtFound) {
-							powerDistricts.add(
-									new PowerDistrict(districtName, districtOn, 0,
-											districtOverPower));
-						}
-					} else if (currentDCCppCommand.equals(F("<0>"))) {
-						// mark track power status as off
-						for (const auto& node : powerDistricts) {
-							node->setCurrentState(false);
-						}
-					} else if (currentDCCppCommand.equals(F("<1>"))) {
-						// mark track power status as on
-						for (const auto& node : powerDistricts) {
-							node->setCurrentState(true);
-							node->setOverCurrent(false);
-						}
-					} else if (currentDCCppCommand.startsWith(F("<q "))
-							|| currentDCCppCommand.startsWith(F("<Q "))) {
-						// sensor parsing
-						int firstSpace = currentDCCppCommand.indexOf(' ');
-						if (currentDCCppCommand.lastIndexOf(' ') > 2) {
-							// <Q ID PIN PULLUP>
-							int secondSpace = currentDCCppCommand.indexOf(' ',
-									firstSpace + 1);
-							int thirdSpace = currentDCCppCommand.indexOf(' ',
-									secondSpace + 1);
-							int sensorID = currentDCCppCommand.substring(firstSpace,
-									secondSpace).toInt();
-							int sensorPin = currentDCCppCommand.substring(secondSpace,
-									thirdSpace).toInt();
-							bool sensorPullUp =
-									currentDCCppCommand.substring(thirdSpace,
-											currentDCCppCommand.length() - 1).toInt()
-											== 1;
-							bool sensorFound = false;
-							for (const auto& node : sensors) {
-								if (node->getId() == sensorID) {
-									sensorFound = true;
-								}
-							}
-							if (!sensorFound) {
-								sensors.add(
-										new Sensor(sensorID, sensorPin, false,
-												sensorPullUp));
-							}
-						} else {
-							// <q ID> or <Q ID>
-							int sensorID = currentDCCppCommand.substring(firstSpace,
-									currentDCCppCommand.length() - 1).toInt();
-							bool sensorActive = currentDCCppCommand[1] == 'Q';
-							bool sensorFound = false;
-							for (const auto& node : sensors) {
-								if (node->getId() == sensorID) {
-									sensorFound = true;
-									node->setActive(sensorActive);
-								}
-							}
-							if (!sensorFound) {
-								forceRefreshSensors = true;
-							}
-						}
-					} else if (currentDCCppCommand.startsWith(F("<H "))) {
-						// turnout parsing
-						int firstSpace = currentDCCppCommand.indexOf(' ');
-						int secondSpace = currentDCCppCommand.indexOf(' ',
-								firstSpace + 1);
-						int turnoutID = currentDCCppCommand.substring(firstSpace,
-								secondSpace).toInt();
-						if (currentDCCppCommand.lastIndexOf(' ') > secondSpace) {
-							int thirdSpace = currentDCCppCommand.indexOf(' ',
-									secondSpace + 1);
-							int fourthSpace = currentDCCppCommand.indexOf(' ',
-									thirdSpace + 1);
-							int address = currentDCCppCommand.substring(secondSpace + 1,
-									thirdSpace).toInt();
-							int subAddress = currentDCCppCommand.substring(
-									thirdSpace + 1, fourthSpace).toInt();
-							bool state = currentDCCppCommand.substring(fourthSpace + 1,
-									currentDCCppCommand.length() - 1).toInt() == 1;
-							bool foundTurnout = false;
-							for (const auto& node : turnouts) {
-								if (node->getId() == turnoutID) {
-									node->setThrown(state);
-									foundTurnout = true;
-								}
-							}
-							if (!foundTurnout) {
-								turnouts.add(
-										new Turnout(turnoutID, address, subAddress,
-												state));
-							}
-						} else {
-							bool state = currentDCCppCommand.substring(secondSpace + 1,
-									currentDCCppCommand.length() - 1).toInt() == 1;
-							for (const auto& node : turnouts) {
-								if (node->getId() == turnoutID) {
-									node->setThrown(state);
-								}
-							}
-						}
-					} else if (currentDCCppCommand.startsWith(F("<Y "))) {
-						// outputs parsing
-						int firstSpace = currentDCCppCommand.indexOf(' ');
-						int secondSpace = currentDCCppCommand.indexOf(' ',
-								firstSpace + 1);
-						int outputID = currentDCCppCommand.substring(firstSpace,
-								secondSpace).toInt();
-						if (currentDCCppCommand.lastIndexOf(' ') > secondSpace) {
-							int thirdSpace = currentDCCppCommand.indexOf(' ',
-									secondSpace + 1);
-							int fourthSpace = currentDCCppCommand.indexOf(' ',
-									thirdSpace + 1);
-							int pinID = currentDCCppCommand.substring(secondSpace,
-									thirdSpace).toInt();
-							bool inverted = currentDCCppCommand.substring(
-									thirdSpace + 1, fourthSpace).toInt() == 1;
-							bool active = currentDCCppCommand.substring(fourthSpace + 1,
-									currentDCCppCommand.length() - 1).toInt() == 1;
-							bool foundOutput = false;
-							for (const auto& node : outputs) {
-								if (node->getId() == outputID) {
-									node->setActive(active);
-									foundOutput = true;
-								}
-							}
-							if (!foundOutput) {
-								outputs.add(
-										new Output(outputID, pinID, inverted, active));
-							}
-						} else {
-							bool active = currentDCCppCommand.substring(secondSpace + 1,
-									currentDCCppCommand.length() - 1).toInt() == 1;
-							for (const auto& node : outputs) {
-								if (node->getId() == outputID) {
-									node->setActive(active);
-								}
-							}
-						}
-					} else if (currentDCCppCommand.startsWith(F("<r"))) {
-						// <rCALLBACK|CALLBACKSUB|CV Value>
-						// <rCALLBACK|CALLBACKSUB|CV VALUE>
-						// <rCALLBACK|CALLBACKSUB|CV BIT VALUE>
-						int firstPipe = currentDCCppCommand.indexOf('|');
-						int secondPipe = currentDCCppCommand.indexOf('|',
-								firstPipe + 1);
-						int lastSpace = currentDCCppCommand.lastIndexOf(' ');
-						int callbackNumber =
-								currentDCCppCommand.substring(2, firstPipe).toInt();
-						int callbackSubNumber = currentDCCppCommand.substring(
-								firstPipe + 1, secondPipe).toInt();
-						for (const auto& node : progRequests) {
-							if (node->getCallbackNumber() == callbackNumber
-									&& node->getCallbackSubNumber()
-											== callbackSubNumber) {
-								node->setValue(
-										currentDCCppCommand.substring(lastSpace + 1,
-												currentDCCppCommand.length() - 1).toInt());
-							}
-						}
-					}
-
-				#ifndef ESP32
-					if (DCCppServer.status() == LISTEN) {
-				#else
-					if (DCCppServer) {
-				#endif
-						for (int i = 0; i < MAX_DCCPP_CLIENTS; i++) {
-							if (DCCppClients[i] && DCCppClients[i].connected()) {
-								DCCppClients[i].print(currentDCCppCommand);
-								delay(1);
-							}
-						}
-						webSocket.textAll(currentDCCppCommand);
-					}
-					currentDCCppCommand = "";
-				}
-			}
+			loop_incoming_from_dcc_generator();
 			// drain the queued up commands
-			while (DCCppPendingCommands.count() > 0) {
-				dccpp_stream->print(DCCppPendingCommands.pop());
+			{
+				DCCppPendingCommands.acquire();
+				while(!DCCppPendingCommands.empty())
+					write_to_dccpp->print(DCCppPendingCommands.pop());
 			}
 		}
 	}
