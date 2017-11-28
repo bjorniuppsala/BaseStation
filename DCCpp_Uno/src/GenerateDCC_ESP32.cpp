@@ -6,60 +6,114 @@
 #include <array>
 #include <atomic>
 #include <Arduino.h>
+
+#include <driver/rmt.h>
+
 constexpr uint16_t TIMER_DIVISOR = 80;  //1MHz (1us) timer count
-constexpr uint64_t ZERO_PERIOD = 58;    // 58us
-constexpr uint64_t ONE_PERIOD = 100;
+constexpr uint16_t ZERO_DURATION = 58;    // 58us
+constexpr uint16_t ONE_DURATION = 100;
 // each half-pulse should be 58us for a one and 100us for a zero
 
 namespace GenerateDCC{
     namespace {
-        struct Esp32Gen {
-            hw_timer_t* timerMid, *timerFull;
+		constexpr rmt_item32_t createBit(uint16_t duration)
+		{
+			rmt_item32_t item;
+			item.duration0 = item.duration1 = duration;
+			item.level0 = 1; item.level1 = 0;
+			return item;
+		}
+		constexpr rmt_item32_t zero_bit = createBit(ZERO_DURATION);
+		constexpr rmt_item32_t one_bit = createBit(ONE_DURATION);
+		constexpr uint16_t tx_buf_size = 128;
+		struct dcc_generator_t {
+			uint16_t tx_buf_fillstart;   // the index i which we should starat filling. index into rmt_item32_t i.e. one bit
+			uint16_t tx_buf_intr_threshold; // the index at which the interrupt (wil) happen
+			std::atomic<uint16_t> tx_intr_count;
+			uint16_t last_tx_intr_handled;
+		    rmt_channel_t channel;
+			RegisterList volatile* packets;
+		};
 
-            template<int timerId>
-            void setupTimers();
-        };
+		dcc_generator_t p_rmt_obj[RMT_CHANNEL_MAX] = {0};
 
-        Esp32Gen generators[2];
-        volatile int isr_count = 0;
+		inline auto moveBufIndex(uint16_t src, uint16_t steps)
+		{
+			return (src + steps) % tx_buf_size;
+		}
+		inline void fill_with_bits(dcc_generator_t* p_rmt, uint16_t start, uint16_t end, rmt_item32_t bit)
+		{
+			for(auto i = start; i < end; i++) {
+		        const_cast<rmt_item32_t&>(RMTMEM.chan[p_rmt->channel].data32[i]) = bit;
+		    }
+		}
 
-        inline auto pinForTimer(int timerId)
-        { return timerId == 0? DCC_SIGNAL_PIN_MAIN : DCC_SIGNAL_PIN_PROG; }
-
-        template<int timerId>
-        void timerISR_full(void)
-        {
-            auto& gen = generators[timerId];
-            auto& packetReg = timerId == 0 ? mainRegs : progRegs;
-            auto period = packetReg.NextBit() ? ONE_PERIOD : ZERO_PERIOD;
-            timerAlarmWrite(gen.timerMid, period, false);
-            timerAlarmWrite(gen.timerFull, period * 2, true);
-            timerWrite(gen.timerMid, 0);
-            timerAlarmEnable(gen.timerMid);
-            digitalWrite(pinForTimer(timerId), HIGH);
+void IRAM_ATTR rmt_driver_isr_default(void* arg)
+{
+    uint32_t intr_st = RMT.int_st.val;
+    uint32_t i = 0;
+    uint8_t channel;
+    portBASE_TYPE HPTaskAwoken = 0;
+    for(i = 0; i < 32; i++) {
+        if(i < 24) {
+            if(intr_st & BIT(i)) {
+                channel = i / 3;
+                dcc_generator_t* p_rmt =&p_rmt_obj[channel];
+                switch(i % 3) {
+                    //TX END
+                    case 0:
+						p_rmt->tx_intr_count++;
+                        break;
+                        //RX_END
+                    case 1:
+                        break;
+                        //ERR
+                    case 2:
+                        RMT.int_ena.val &= (~(BIT(i)));
+                        break;
+                    default:
+                        break;
+                }
+                RMT.int_clr.val = BIT(i);
+            }
+        } else {
+            if(intr_st & (BIT(i))) {
+                channel = i - 24;
+                RMT.int_clr.val = BIT(i);
+				dcc_generator_t* p_rmt = &p_rmt_obj[channel];
+				p_rmt->tx_intr_count++;
+            }
         }
-        template<int timerId>
-        void timerISR_mid()
-        {
-            ++isr_count;
-            digitalWrite(pinForTimer(timerId), LOW);
-        }
+    }
+}
 
-        template<int timerId>
-        void Esp32Gen::setupTimers()
-        {
-            timerFull = timerBegin(2*timerId, 80, /*countUp*/true);
-            timerAttachInterrupt(timerFull, &timerISR_full<timerId>, /*edge*/true);
-            timerAlarmWrite(timerFull, 2*ZERO_PERIOD, /*autoreload*/true);
-            timerWrite(timerFull, 0);
-            timerAlarmEnable(timerFull);
+void do_fill_buffer(dcc_generator_t* p_rmt, uint16_t start, uint16_t end)
+{
+	auto* data32 = const_cast<rmt_item32_t*>(RMTMEM.chan[p_rmt->channel].data32);
+	for(auto p = start; p < end; ++p)
+	{
+		data32[p] = p_rmt->packets->NextBit() ? one_bit :zero_bit;
+	}
+}
+void try_fill_buffer(dcc_generator_t* p_rmt)
+{
+	if(p_rmt->tx_intr_count == p_rmt->last_tx_intr_handled)
+		return;
+	p_rmt->last_tx_intr_handled = p_rmt->tx_intr_count;
 
-            timerMid = timerBegin(2*timerId+1, 80, /*countUp*/true);
-            timerAttachInterrupt(timerMid, &timerISR_mid<timerId>, /*edge*/true);
-            timerAlarmWrite(timerMid, ZERO_PERIOD, /*autoreload*/false);
-            timerWrite(timerMid, 0);
-            timerAlarmEnable(timerMid);
-        }
+	auto fill_end = p_rmt->tx_buf_intr_threshold;
+	auto to_fill = (fill_end- p_rmt->tx_buf_fillstart) % tx_buf_size;
+	p_rmt->tx_buf_intr_threshold = moveBufIndex(fill_end, to_fill);
+	if(fill_end < p_rmt->tx_buf_fillstart)
+	{ //fill up to end of block:
+		do_fill_buffer(p_rmt, p_rmt->tx_buf_fillstart, tx_buf_size);
+		p_rmt->tx_buf_fillstart = 0;
+	}
+	do_fill_buffer(p_rmt, p_rmt->tx_buf_fillstart, fill_end);
+	p_rmt->tx_buf_fillstart = fill_end;
+	rmt_set_tx_thr_intr_en(p_rmt->channel, true, p_rmt->tx_buf_intr_threshold);
+}
+
     }
     void setup()
     {
@@ -73,18 +127,45 @@ namespace GenerateDCC{
         digitalWrite(DIRECTION_MOTOR_CHANNEL_PIN_B,LOW);
         pinMode(DCC_SIGNAL_PIN_PROG,OUTPUT);      // THIS ARDUINO OUTPUT PIN MUST BE PHYSICALLY CONNECTED TO THE PIN FOR DIRECTION-B OF MOTOR CHANNEL-B
 
-        generators[0].setupTimers<0>();
-        generators[1].setupTimers<1>();
+		p_rmt_obj[0].packets = &mainRegs;
+		p_rmt_obj[1].packets = &progRegs;
+
+		rmt_config_t c1_config = {
+			/*.rmt_mode =*/ RMT_MODE_TX,
+			/*.channel = */RMT_CHANNEL_0,
+			/*.clk_div = */TIMER_DIVISOR,
+			/*.gpio_num = */(gpio_num_t)2,
+			/*.mem_block_num = */tx_buf_size / 64, // have one rtmem block of 64 32 bit words. (space for 128 bits)
+			/*.tx_config =*/ {
+				/*.loop_en =*/ false,          /*!< RMT loop output mode*/
+    			/*.carrier_freq_hz =*/ 0,      /*!< RMT carrier frequency */
+    			/*.carrier_duty_percent =*/ 0, /* RMT carrier duty (%) */
+     			/*.carrier_level =*/ RMT_CARRIER_LEVEL_HIGH,  /*!< RMT carrier level */
+    			/*.carrier_en =*/ false,       /*!< RMT carrier enable */
+    			/*.idle_level = */RMT_IDLE_LEVEL_LOW, /*!< RMT idle level */
+				/*.idle_output_en = */false
+			}
+		};
+
+		rmt_config(&c1_config);
+		for(int i = 0; i < 1; ++i)
+		{
+			auto& g = p_rmt_obj[i];
+			g.tx_buf_fillstart = 0;
+			g.tx_buf_intr_threshold = 32;
+			g.tx_intr_count = g.last_tx_intr_handled =  0;
+			g.channel = (rmt_channel_t)i;
+			do_fill_buffer(&g, 0, tx_buf_size);
+			rmt_set_tx_thr_intr_en(g.channel, true, g.tx_buf_intr_threshold);
+			rmt_tx_start(g.channel, true);
+		}
+
     }
 
     void loop()
     {
-        /*auto micros = timerRead(generators[1].timerMid);
-        auto config = timerGetConfig(generators[1].timerMid);
-        auto int_status = TIMERG0.int_st_timers.val;
-        CommManager::printf("timer read: %" PRIu64" confgi 0x%x int_Status = 0x%x isr_count = %d\n", micros, config, int_status,  isr_count);
-        */
-    }
+		try_fill_buffer(&p_rmt_obj[0]);
+	}
 }
 
 #endif
