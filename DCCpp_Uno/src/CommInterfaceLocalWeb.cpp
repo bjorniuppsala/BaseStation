@@ -34,9 +34,7 @@ LocalWebInterface::LocalWebInterface()
 }
 void LocalWebInterface::process()
 {
-	Serial.printf("LocalWebInterface::process calling DCCpp::Server::loop()\n");
 	DCCpp::Server::loop();
-	Serial.printf("LocalWebInterface::process checking read_from_server\n");
 	while(read_from_server.available()) {
 		auto ch = read_from_server.read();
 		if(ch == -1)
@@ -54,7 +52,6 @@ void LocalWebInterface::process()
 			buffer += (char)ch;
 		}
 	}
-	Serial.printf("LocalWebInterface::process done\n");
 }
 void LocalWebInterface::showConfiguration()
 {

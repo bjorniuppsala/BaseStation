@@ -203,7 +203,7 @@ volatile RegisterList progRegs(2);                     // create a shorter list 
 void loop(){
 	static auto last = millis();
 	auto start = micros();
-	bool log = (last) < millis();
+	bool log = false && (last) < millis();
 	if(log)
 	{
 		Serial.printf("looping!  pending elapsed=%d\n", micros() - start);
