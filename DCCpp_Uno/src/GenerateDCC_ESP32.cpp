@@ -112,7 +112,6 @@ namespace GenerateDCC{
 			decltype(writePos) nextWrite;
 			while((nextWrite = nextPos(writePos)) != readPos) {
 				buffer[nextWrite] = registers->NextByte();
-				Serial.printf("fillBuffer: read: %d write: %d data: 0x%x\n", readPos, writePos, buffer[nextWrite]);
 				writePos = nextWrite;
 			}
 		}
