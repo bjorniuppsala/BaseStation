@@ -6,6 +6,7 @@
 #include <array>
 #include <atomic>
 #include <Arduino.h>
+#include "soc/timer_group_struct.h"
 constexpr uint16_t TIMER_DIVISOR = 80;  //1MHz (1us) timer count
 constexpr uint64_t ZERO_PERIOD = 58;    // 58us
 constexpr uint64_t ONE_PERIOD = 100;
@@ -13,11 +14,20 @@ constexpr uint64_t ONE_PERIOD = 100;
 
 namespace GenerateDCC{
     namespace {
+		constexpr size_t tx_buf_size = 32;
+		auto nextPos(uint8_t pos) { return (pos + 1) % tx_buf_size; }
         struct Esp32Gen {
             hw_timer_t* timerMid, *timerFull;
+			RegisterList volatile* registers;
+
+			uint8_t bitBuffer, remainingBits;
+
+			volatile uint8_t readPos, writePos;
+			volatile uint8_t buffer[tx_buf_size];
 
             template<int timerId>
             void setupTimers();
+			void fillBuffer();
         };
 
         Esp32Gen generators[2];
@@ -25,29 +35,65 @@ namespace GenerateDCC{
 
         inline auto pinForTimer(int timerId)
         { return timerId == 0? DCC_SIGNAL_PIN_MAIN : DCC_SIGNAL_PIN_PROG; }
-
+		inline void IRAM_ATTR setAlarm(timg_dev_t& tg, unsigned i, uint64_t period)
+		{
+			tg.hw_timer[i].alarm_high = (uint32_t)(period >> 32);
+			tg.hw_timer[i].alarm_low = (uint32_t)(period & 0xffffffff);
+		}
+		inline void IRAM_ATTR setTimers(timg_dev_t& tg, uint64_t period)
+		{
+			setAlarm(tg, 0, period * 2);
+			setAlarm(tg, 1, period);
+			tg.hw_timer[1].load_high = 0;
+			tg.hw_timer[1].load_low = 0;
+			tg.hw_timer[1].reload = 1;
+			tg.hw_timer[1].config.alarm_en = 1;
+		}
         template<int timerId>
-        void timerISR_full(void)
+        void IRAM_ATTR timerISR_full(void)
         {
             auto& gen = generators[timerId];
-            auto& packetReg = timerId == 0 ? mainRegs : progRegs;
-            auto period = packetReg.NextBit() ? ONE_PERIOD : ZERO_PERIOD;
-            timerAlarmWrite(gen.timerMid, period, false);
-            timerAlarmWrite(gen.timerFull, period * 2, true);
-            timerWrite(gen.timerMid, 0);
-            timerAlarmEnable(gen.timerMid);
+			if(gen.remainingBits >= 8) {
+				if(gen.readPos != gen.writePos)
+				{
+					gen.bitBuffer = gen.buffer[gen.readPos];
+					gen.readPos = nextPos(gen.readPos);
+				} else{
+					gen.bitBuffer = 0;
+
+				}
+				gen.remainingBits= 0;
+			}
+			auto thisBit = gen.bitBuffer & RegisterList::bitMask[gen.remainingBits];
+			gen.remainingBits++;
+            auto period = thisBit ? ONE_PERIOD : ZERO_PERIOD;
+            /*we cant use the timer* functions since they are not IRAM_ATTR
+			timerAlarmWrite(gen.timerMid, period, false);
+            timerAlarmWrite(gen.timerFull, period * 2, true);*/
+			auto& timergroup = timerId == 0 ? TIMERG0 : TIMERG1;
+			setTimers(timergroup, period);
             digitalWrite(pinForTimer(timerId), HIGH);
         }
         template<int timerId>
-        void timerISR_mid()
+        void IRAM_ATTR timerISR_mid()
         {
             ++isr_count;
             digitalWrite(pinForTimer(timerId), LOW);
         }
+		// gcc ignores section attr on template functions, but not on template instantiations...
+		template [[gnu::section(".iram1")]] void timerISR_mid<0>();
+		template [[gnu::section(".iram1")]] void timerISR_mid<1>();
+		template [[gnu::section(".iram1")]] void timerISR_full<0>();
+		template [[gnu::section(".iram1")]] void timerISR_full<1>();
 
         template<int timerId>
         void Esp32Gen::setupTimers()
         {
+			remainingBits = 0;
+			registers = timerId == 0 ? &mainRegs : &progRegs;
+			memset(const_cast<uint8_t*>(buffer), sizeof(buffer), 0);
+			readPos = 0;
+			writePos = tx_buf_size - 1;
             timerFull = timerBegin(2*timerId, 80, /*countUp*/true);
             timerAttachInterrupt(timerFull, &timerISR_full<timerId>, /*edge*/true);
             timerAlarmWrite(timerFull, 2*ZERO_PERIOD, /*autoreload*/true);
@@ -60,6 +106,16 @@ namespace GenerateDCC{
             timerWrite(timerMid, 0);
             timerAlarmEnable(timerMid);
         }
+		void Esp32Gen::fillBuffer()
+		{
+			//Serial.printf("fillBuffer: read: %d write: %d\n", readPos, writePos);
+			decltype(writePos) nextWrite;
+			while((nextWrite = nextPos(writePos)) != readPos) {
+				buffer[nextWrite] = registers->NextByte();
+				Serial.printf("fillBuffer: read: %d write: %d data: 0x%x\n", readPos, writePos, buffer[nextWrite]);
+				writePos = nextWrite;
+			}
+		}
     }
     void setup()
     {
@@ -79,6 +135,8 @@ namespace GenerateDCC{
 
     void loop()
     {
+		for(int i = 0; i < 1; ++i)
+			generators[i].fillBuffer();
         /*auto micros = timerRead(generators[1].timerMid);
         auto config = timerGetConfig(generators[1].timerMid);
         auto int_status = TIMERG0.int_st_timers.val;
