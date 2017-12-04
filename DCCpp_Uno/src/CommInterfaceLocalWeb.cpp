@@ -21,6 +21,7 @@
 #include "../../DCCpp_ESP/src/ProgramRequest.cpp"
 #include "../../DCCpp_ESP/src/Sensor.cpp"
 #include "../../DCCpp_ESP/src/Turnout.cpp"
+#include "../../DCCpp_ESP/src/CabCache.cpp"
 
 namespace {
 	StreamString write_to_server, read_from_server;
@@ -43,9 +44,7 @@ void LocalWebInterface::process()
 			inCommandPayload = true;
 			buffer = "";
 		} else if (ch == '>') {
-			Serial.printf("LocalWebInterface::process push to SerialCommand\n");
 			SerialCommand::parse(buffer.c_str());
-			Serial.printf("LocalWebInterface::process back from serialcommand\n");
 			buffer = "";
 			inCommandPayload = false;
 		} else if(inCommandPayload) {

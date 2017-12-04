@@ -28,8 +28,10 @@
 #include "Output.h"
 #include "Turnout.h"
 #include "ProgramRequest.h"
+#include "CabCache.h"
 
 #include <StreamString.h>
+#include <sstream>
 #include <mutex>
 #include <freertos/semphr.h>
 
@@ -39,6 +41,7 @@ WiFiServer DCCppServer(DCCPP_CLIENT_PORT);
 WiFiClient DCCppClients[MAX_DCCPP_CLIENTS];
 AsyncWebServer webServer(80);
 AsyncWebSocket webSocket("/ws");
+CabCache cabServer{"/cabs"};
 
 struct PendingQueue {
 	SemaphoreHandle_t m = xSemaphoreCreateMutex();
@@ -583,7 +586,6 @@ void loop_incoming_from_dcc_generator()
 			currentDCCppCommand += ch;
 		}
 		if (inDCCPPCommand && ch == '>') {
-			Serial.println(String("got command: ") + currentDCCppCommand);
 			inDCCPPCommand = false;
 			if (currentDCCppCommand.startsWith(F("<iESP-"))) {
 				if (currentDCCppCommand.indexOf(F("connect")) > 0) {
@@ -882,6 +884,12 @@ void loop_incoming_from_dcc_generator()
 										currentDCCppCommand.length() - 1).toInt());
 					}
 				}
+			} else if(currentDCCppCommand.startsWith("<T")) {
+				std::stringstream str;
+				str << (currentDCCppCommand.c_str() + 2);
+				int id, speed, direction;
+				str >> id >> speed >> direction;
+				cabServer.update(id, speed, direction);
 			}
 
 		#ifndef ESP32
@@ -923,6 +931,7 @@ namespace DCCpp {
 
 			webSocket.onEvent(onWSEvent);
 			webServer.addHandler(&webSocket);
+			cabServer.hookUp(webServer);
 			webServer.serveStatic("/", SPIFFS, "/").setDefaultFile("index.html").setLastModified(espBuildTime);
 			webServer.on("/espinfo", HTTP_GET, &handleESPInfo);
 			webServer.on("/dccpp/programmer", HTTP_GET | HTTP_POST | HTTP_DELETE,
