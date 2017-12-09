@@ -6,15 +6,15 @@
 CabCache::CabCache(String const& url)
 : mCacheBuffer { 128 }
 , mCache { mCacheBuffer.createObject() }
-, mEventSource { url }
+, mWebsocket { url }
 {}
 void CabCache::hookUp(AsyncWebServer& server)
 {
-	mEventSource.onConnect([](AsyncEventSourceClient *client){ Serial.printf("Yay! a client! \n");});
+	/*mEventSource.onConnect([](AsyncEventSourceClient *client){ Serial.printf("Yay! a client! \n");});
 	mEventSource.setFilter([](AsyncWebServerRequest *client) {
 		 Serial.printf("Filering client! conntype=%s method = %s\n",
-		  client->requestedConnTypeToString(), client->methodToString()); return true;});
-	server.addHandler(&mEventSource);
+		  client->requestedConnTypeToString(), client->methodToString()); return true;});*/
+	server.addHandler(&mWebsocket);
 }
 void CabCache::update(int id, int speed, int direction)
 {
@@ -36,7 +36,7 @@ void CabCache::pushUpdates()
 	String asStr;
 	mCache.printTo(asStr);
 	//Serial.printf("pushing update %s\n", asStr.c_str());
-	mEventSource.send(asStr.c_str());
+	mWebsocket.textAll(asStr.c_str());
 }
 
 void CabCache::handleReq(AsyncWebSocket * server, AsyncWebSocketClient * client,

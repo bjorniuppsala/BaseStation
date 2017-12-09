@@ -6,10 +6,9 @@
 
 class CabCache
 {
+	AsyncWebSocket mWebsocket;
 	DynamicJsonBuffer mCacheBuffer;
 	JsonObject& mCache;
-
-	AsyncEventSource mEventSource;
 
 public:
 	CabCache(String const& url);
