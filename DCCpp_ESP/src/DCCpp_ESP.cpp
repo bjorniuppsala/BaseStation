@@ -644,6 +644,9 @@ void loop_incoming_from_dcc_generator()
 					DCCppServer.begin();
 					webServer.begin();
 					MDNS.begin(HOSTNAME);
+					MDNS.addService("_http", "_tcp", 80);
+					MDNS.addService("_dccpp_web", "_tcp", 80);
+					MDNS.addService("_dccpp", "_tcp", 2560);
 					taskScheduler.enableAll();
 					write_to_dccpp->println(F("<iESP ready>"));
 				} else if (currentDCCppCommand.indexOf(F("stop")) > 0) {
@@ -948,9 +951,6 @@ namespace DCCpp {
 
 			DCCppServer.setNoDelay(true);
 
-			MDNS.addService("http", "tcp", 80);
-			MDNS.addService("dccpp_web", "http", 80);
-			MDNS.addService("dccpp", "tcp", 2560);
 			// TBD : WiThrottle support
 			//MDNS.addService("_withrottle", "tcp", 81);
 			//MDNS.addServiceTxt("_withrottle", "tcp", "jmri", "4.5.7");
