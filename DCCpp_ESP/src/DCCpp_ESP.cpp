@@ -31,6 +31,7 @@
 #include "CabCache.h"
 
 #include <StreamString.h>
+#include <string.h>
 #include <sstream>
 #include <mutex>
 #include <freertos/semphr.h>
@@ -641,6 +642,7 @@ void loop_incoming_from_dcc_generator()
 						write_to_dccpp->println(F("<iESP connect timeout>"));
 					}
 				} else if (currentDCCppCommand.indexOf(F("start")) > 0) {
+					WiFi.printDiag(Serial);
 					DCCppServer.begin();
 					webServer.begin();
 					MDNS.begin(HOSTNAME);
@@ -686,6 +688,26 @@ void loop_incoming_from_dcc_generator()
 					write_to_dccpp->print(DCCppServer ? "1" : "0");
 #endif
 					write_to_dccpp->println(F(">"));
+				} else if(currentDCCppCommand.indexOf(F("softAP")) > 0) {
+					//size_t strmax = currentDCCppCommand.length();
+    				char *next_token;
+					auto header = strtok_r(const_cast<char*>(currentDCCppCommand.c_str()),
+						" ", &next_token);
+					auto ssid = strtok_r(nullptr, " >", &next_token);
+					auto passwd = strtok_r(nullptr, " >", &next_token);
+					auto endTag = strtok_r(nullptr, " >", &next_token);
+					auto checkNull = [](auto* p) { return p ? p : "null";};
+					Serial.printf("header = '%s' ssid = '%s' pass='%s' endTag='%s'\n",
+						checkNull(header), checkNull(ssid), checkNull(passwd), checkNull(endTag));
+					if(!WiFi.softAP(ssid, passwd)) {
+						WiFi.printDiag(Serial);
+						write_to_dccpp->println(F("<iESP AP connect timeout>"));
+					} else {
+						write_to_dccpp->print(F("<iESP AP connected "));
+						write_to_dccpp->print(WiFi.softAPIP().toString());
+						write_to_dccpp->println(F(">"));
+					}
+
 				}
 			} else if (currentDCCppCommand.startsWith(F("<a "))) {
 				// parse current details so we can display it
@@ -888,11 +910,12 @@ void loop_incoming_from_dcc_generator()
 					}
 				}
 			} else if(currentDCCppCommand.startsWith("<T")) {
-				std::stringstream str;
-				str << (currentDCCppCommand.c_str() + 2);
-				int id, speed, direction;
-				str >> id >> speed >> direction;
-				cabServer.update(id, speed, direction);
+				char *next_token;
+				auto idStr = strtok_r(const_cast<char*>(currentDCCppCommand.c_str()) + 2,
+					" ", &next_token);
+				auto speedStr = strtok_r(nullptr, " ", &next_token);
+				auto dirStr = strtok_r(nullptr, " >", &next_token);
+				cabServer.update(atoi(idStr), atoi(speedStr), atoi(dirStr));
 			}
 
 		#ifndef ESP32
@@ -926,7 +949,8 @@ namespace DCCpp {
 			WiFi.hostname(HOSTNAME);
 		#else
 			WiFi.getMode();
-			WiFi.mode(WIFI_MODE_STA);
+			//WiFi.mode(WIFI_MODE_STA);
+			WiFi.mode(WIFI_AP_STA);
 			WiFi.setAutoConnect(false);
 			WiFi.setHostname(HOSTNAME);
 		#endif

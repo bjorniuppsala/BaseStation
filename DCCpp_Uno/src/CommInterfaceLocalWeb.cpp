@@ -30,8 +30,9 @@ LocalWebInterface::LocalWebInterface()
 {
 	Serial.println("Yay!");
 	DCCpp::Server::setup(write_to_server, read_from_server);
-	send("<iESP-connect 21 TN_private_W9V7VU_Ext W49K4XWN4344J>\n"
-		"<iESP-start>\n");
+	send("<iESP-connect 21 TN_private_W9V7VU_Ext W49K4XWN4344J>\n");
+//		"<iESP-start>\n");*/
+	send("<iESP-softAP trains>\n<iESP-start>\n");
 }
 void LocalWebInterface::process()
 {
