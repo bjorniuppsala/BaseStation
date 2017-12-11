@@ -935,6 +935,7 @@ namespace DCCpp {
 			webSocket.onEvent(onWSEvent);
 			webServer.addHandler(&webSocket);
 			cabServer.hookUp(webServer);
+			cabServer.loadFrom(SPIFFS, "/cabs.json");
 			webServer.serveStatic("/", SPIFFS, "/").setDefaultFile("index.html").setLastModified(espBuildTime);
 			webServer.on("/espinfo", HTTP_GET, &handleESPInfo);
 			webServer.on("/dccpp/programmer", HTTP_GET | HTTP_POST | HTTP_DELETE,

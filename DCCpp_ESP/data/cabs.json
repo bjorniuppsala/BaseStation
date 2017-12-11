@@ -1,0 +1,4 @@
+{
+	"1" : { "name" : "Train1", "speed" : "3"},
+	"2" : { "name" : "Train2", "speed" : "0"}
+}
