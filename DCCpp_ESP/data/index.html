@@ -364,17 +364,22 @@
 	</form>
 </div>
 <script type="text/javascript">
+	function makeWsUrl(subPath) {
+		var u = window.location + "";
+		u = u.replace("http", "ws").replace("/index.html", "");
+		if(!u.endsWith("/")) {
+			u += "/";
+		}
+		u += subPath;
+		console.log('server url:', u);
+		return u;
+	}
 	var dialogLocoTargetObject;
 	var locoData = new HashMap();
 	var socket;
-	var socketUrl = window.location + "";
-	socketUrl = socketUrl.replace("http", "ws").replace("/index.html", "");
-	if(socketUrl.endsWith("/")) {
-		socketUrl += "ws";
-	} else {
-		socketUrl += "/ws";
-	}
-	console.log('server url:', socketUrl);
+	var socketUrl = makeWsUrl("ws");
+	var cabsSocket;
+	var cabsSocketUrl = makeWsUrl("cabs");
 	var turnoutEditor;
 
 	function sendCommand(command) {
@@ -400,7 +405,7 @@
 			$('#loco' + locoIDKey + 'Info').text('FWD ' + newSpeed);
 		} else {
 			$('#loco' + locoIDKey + 'Info').text('REV ' + newSpeed);
-		} 
+		}
 	}
 	function sendLocoFunction(locoIDKey, functionID, active) {
 		var locoNumber = $('label[for=loco' + locoIDKey + ']', '#locoGroup').text().trim();
@@ -473,6 +478,16 @@
 		$('#throttleConsole').prepend(data.replace('<', '&lt;') + "\n");
 		$('#throttleConsole').scrollTop();
 	}
+	function receiveCabsData(data) {
+		var jsdata = $.parseJSON(data);
+		console.log('got data!' + jsdata);
+		if(jsdata["type"] == "trains") {
+			$.each(jsdata, function(index, element) {
+				
+				$('#loco' + locoIDKey + 'Info').text('Idle');
+			});
+		}
+	}
 	function connectWebSocket(active) {
 		if (active) {
 			if(!socket || !socket.isConnected()) {
@@ -481,10 +496,19 @@
 				socket.listen(receiveWebSocketData);
 				socket.connect();
 			}
+			if(!cabsSocket || !cabsSocket.isConnected()) {
+				console.log('connecting to: ' + cabsSocketUrl);
+				cabsSocket = $.simpleWebSocket({url: cabsSocketUrl, dataType: 'json'});
+				cabsSocket.listen(receiveCabsData);
+				cabsSocket.connect();
+			}
 		} else {
 			if(socket && socket.isConnected()) {
 				console.log('disconnecting')
 				socket.close();
+			}
+			if(cabsSocket && cabsSocket.isConnected()) {
+				cabsSocket.close();
 			}
 		}
 	}
@@ -601,7 +625,7 @@
 				}
 			}
 		});
-		
+
 		$('#top-tabs').tabs({
 			beforeActivate: function(event, ui) {
 				if(ui.newPanel.attr('id') == 'tab-top-1') {
@@ -1054,14 +1078,14 @@
 			}
 		});
 		$('#btnPersistConfig').click(function() {
-			$.post({url: '/dccpp/config'}); 
+			$.post({url: '/dccpp/config'});
 		});
 		$('#btnClearConfig').button();
 		$('#btnClearConfig').click(function() {
 			$.ajax({
 				url: '/dccpp/config',
 				method: 'DELETE'
-			}); 
+			});
 		});
 		var progChecker;
 		var progCheckerAttempts = 0;
@@ -1147,7 +1171,7 @@
 						$('#progResult').append('programming request failed.\n');
 					}
 				}
-			}); 
+			});
 		});
 		$('#progTarget').toggles({
 			text:{
@@ -1239,5 +1263,3 @@
 
 </body>
 </html>
-
-
