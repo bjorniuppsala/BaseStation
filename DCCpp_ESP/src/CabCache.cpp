@@ -1,7 +1,9 @@
 #include "config.h"
 #include "CabCache.h"
+#include "DCCpp_ESP.h"
 #include "ArduinoJson.h"
 #include "AsyncJson.h"
+#include <algorithm>
 
 CabCache::CabCache(String const& url)
 : mWebsocket { url }
@@ -40,6 +42,60 @@ void CabCache::pushUpdates()
 void CabCache::handleReq(AsyncWebSocket * server, AsyncWebSocketClient * client,
 			   AwsEventType type, void * arg, uint8_t *data, size_t len)
 {
+	switch(type) {
+		case WS_EVT_CONNECT:
+			mClientBuf[client->id()] = {};
+			break;
+		case WS_EVT_DISCONNECT:
+			mClientBuf.erase(client->id());
+			break;
+		case WS_EVT_PONG:
+			break;
+		case WS_EVT_ERROR:
+			//well..
+			break;
+		case WS_EVT_DATA:
+			auto info = reinterpret_cast<AwsFrameInfo const*>(arg);
+			auto& buffer = mClientBuf[client->id()];
+
+            // First packet
+            if (info->index == 0) {
+                if(info->len > MAX_WEBSOCKET_DATA_SIZE)
+                    return;
+                buffer.clear();// to make sure that the buffer does not contain any junk from old messages.
+				buffer.resize(info->len);
+            }
+
+            // Store data
+            if(info->index + len > buffer.size())
+                return;
+			std::copy(data, data + len, buffer.begin() + info->index);
+
+            // Last packet
+            if (info->index + len == info->len && info->final) {
+                handleReq(client, buffer);
+                buffer.clear();
+            }
+			break;
+	};
+}
+void CabCache::handleReq(AsyncWebSocketClient * client, std::string& message)
+{
+	DynamicJsonBuffer buffer;
+	auto& json = buffer.parseObject(const_cast<char*>(message.c_str()));
+	if(json["type"] == "command") {
+		String msg = json["command"];
+		if(msg.length() > 0);
+		DCCpp::Server::pushPendingDCCCommand(std::move(msg));
+	} else if(json["type"] == "speed"){
+		StreamString msg;
+		int speed = json["speed"];
+		int direction = speed < 0 ? 0 : 1;
+		speed = abs(speed);
+		msg.printf(PSTR("<t %d %d %d %d>"), json["register"], json["address"], speed, direction);
+		DCCpp::Server::pushPendingDCCCommand(std::move(msg));
+	}
+
 }
 
 void CabCache::loadFrom(fs::FS& fs, char const* path)

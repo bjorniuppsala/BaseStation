@@ -939,6 +939,11 @@ void loop_incoming_from_dcc_generator()
 
 namespace DCCpp {
     namespace Server {
+		void pushPendingDCCCommand(String cmd)
+		{
+			DCCppPendingCommands.push(std::move(cmd));
+		}
+		
 		void setup(Stream& read_from, Print& write_to)
 		{
 			write_to_dccpp = &write_to;

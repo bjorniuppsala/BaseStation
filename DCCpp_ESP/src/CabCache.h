@@ -15,6 +15,7 @@ class CabCache
 	};
 	//map id => name, speed
 	std::unordered_map<int, CabInfoT> mCache;
+	std::unordered_map<int, std::string> mClientBuf;
 public:
 	CabCache(String const& url);
 	void hookUp(AsyncWebServer& server);
@@ -26,4 +27,5 @@ public:
 private:
 	void handleReq(AsyncWebSocket * server, AsyncWebSocketClient * client,
 				   AwsEventType type, void * arg, uint8_t *data, size_t len);
+	void handleReq(AsyncWebSocketClient * client, std::string& message);
 };
