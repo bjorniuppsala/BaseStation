@@ -645,7 +645,10 @@ void loop_incoming_from_dcc_generator()
 					WiFi.printDiag(Serial);
 					DCCppServer.begin();
 					webServer.begin();
-					MDNS.begin(HOSTNAME);
+					auto mdnsIf = WiFi.getMode() == WIFI_AP_STA ? TCPIP_ADAPTER_IF_AP : TCPIP_ADAPTER_IF_STA;
+					Serial.printf("{MDNS} interface=%d\n", mdnsIf);
+					if(!MDNS.begin(HOSTNAME, mdnsIf))
+						Serial.printf("{MDNS} failed to setup. interface=%d\n", mdnsIf);
 					MDNS.addService("_http", "_tcp", 80);
 					MDNS.addService("_dccpp_web", "_tcp", 80);
 					MDNS.addService("_dccpp", "_tcp", 2560);
@@ -943,7 +946,7 @@ namespace DCCpp {
 		{
 			DCCppPendingCommands.push(std::move(cmd));
 		}
-		
+
 		void setup(Stream& read_from, Print& write_to)
 		{
 			write_to_dccpp = &write_to;
