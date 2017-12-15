@@ -28,11 +28,10 @@ namespace {
 }
 LocalWebInterface::LocalWebInterface()
 {
-	Serial.println("Yay!");
 	DCCpp::Server::setup(write_to_server, read_from_server);
 	send("<iESP-connect 21 TN_private_W9V7VU_Ext W49K4XWN4344J>\n");
 //		"<iESP-start>\n");*/
-	send("<iESP-softAP trains>\n<iESP-start>\n");
+	send("<iESP-softAP trains>\n");
 }
 void LocalWebInterface::process()
 {
@@ -45,7 +44,11 @@ void LocalWebInterface::process()
 			inCommandPayload = true;
 			buffer = "";
 		} else if (ch == '>') {
-			SerialCommand::parse(buffer.c_str());
+			if(buffer.startsWith("iESP AP connected")) {
+				Serial.printf("YAy have connection, starting!\n");
+				send("<iESP-start>\n");
+			} else
+				SerialCommand::parse(buffer.c_str());
 			buffer = "";
 			inCommandPayload = false;
 		} else if(inCommandPayload) {

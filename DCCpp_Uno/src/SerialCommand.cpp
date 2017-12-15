@@ -42,7 +42,7 @@ void SerialCommand::init(volatile RegisterList *_mRegs, volatile RegisterList *_
 ///////////////////////////////////////////////////////////////////////////////
 
 void SerialCommand::parse(const char *com){
-	Serial.printf("parsing command %s\n", com);
+	Serial.printf("SerialCommand::parse() %s\n", com);
   switch(com[0]){
 
 /***** SET ENGINE THROTTLES USING 128-STEP SPEED CONTROL ****/
