@@ -23,24 +23,29 @@ void CabCache::update(int id, int speed, int direction)
 	if(c.name.length() == 0)
 		c.name = String{id};
 	c.speed = direction ? speed : -speed;
-	pushUpdates();
+	pushUpdates(id);
 }
 
-void CabCache::pushUpdates()
+void CabCache::pushUpdates(int id, AsyncWebSocketClient* dest)
 {
 	DynamicJsonBuffer buf;
 	auto& root = buf.createObject();
 	root["type"] = "trains";
 	for(auto const& t : mCache) {
-		auto& train = root.createNestedObject(String{t.first});
-		train["speed"] = t.second.speed;
-		train["name"] = t.second.name.c_str(); //to save some copying.
-		train["id"] = t.first;
+		if(id == t.first || id == -1) {
+			auto& train = root.createNestedObject(String{t.first});
+			train["speed"] = t.second.speed;
+			train["name"] = t.second.name.c_str(); //to save some copying.
+			train["id"] = t.first;
+		}
 	}
 	String asStr;
 	root.printTo(asStr);
 	//Serial.printf("pushing update %s\n", asStr.c_str());
-	mWebsocket.textAll(asStr.c_str());
+	if(dest)
+		dest->text(asStr);
+	else
+		mWebsocket.textAll(asStr.c_str());
 }
 
 void CabCache::handleReq(AsyncWebSocket * server, AsyncWebSocketClient * client,
@@ -50,6 +55,7 @@ void CabCache::handleReq(AsyncWebSocket * server, AsyncWebSocketClient * client,
 		case WS_EVT_CONNECT:
 			mClientBuf[client->id()] = {};
 			Serial.printf("[WS] new client %d\n", client->id());
+			pushUpdates(-1, client);
 			break;
 		case WS_EVT_DISCONNECT:
 			mClientBuf.erase(client->id());
@@ -96,6 +102,9 @@ void CabCache::handleReq(AsyncWebSocketClient * client, std::string& message)
 	DynamicJsonBuffer buffer;
 	auto& json = buffer.parseObject(const_cast<char*>(message.c_str()));
 	char const* type = json["type"];
+	Serial.printf("[CC] handles input! type='%s' ", type ? type : "null");
+	json.printTo(Serial);
+
 	if(!type) return;
 	else if(strcmp(type, "command") == 0) {
 		String msg = json["command"];
@@ -107,7 +116,9 @@ void CabCache::handleReq(AsyncWebSocketClient * client, std::string& message)
 		int direction = speed < 0 ? 0 : 1;
 		speed = abs(speed);
 		StreamString msg;
-		msg.printf(PSTR("<t %d %d %d %d>"), json["register"].as<int>(), json["id"].as<int>(), speed, direction);
+		auto reg = json["register"];
+		msg.printf(PSTR("<t%d %d %d %d>"), reg ? reg.as<int>() : 10,
+			json["id"].as<int>(), speed, direction);
 		DCCpp::Server::pushPendingDCCCommand(std::move(msg));
 	}
 

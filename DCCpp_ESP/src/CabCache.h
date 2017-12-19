@@ -20,8 +20,7 @@ public:
 	CabCache(String const& url);
 	void hookUp(AsyncWebServer& server);
 	void update(int id, int speed, int direction);
-	void pushUpdates(int id);
-	void pushUpdates();
+	void pushUpdates(int id, AsyncWebSocketClient* client = nullptr); // null for pushing to all.
 
 	void loadFrom(fs::FS& fs, char const* path);
 private:
