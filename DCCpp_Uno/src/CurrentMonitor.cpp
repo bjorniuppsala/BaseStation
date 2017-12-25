@@ -21,7 +21,10 @@ Part of DCC++ BASE STATION for the Arduino
   #define  CURRENT_SAMPLE_TIME        1
 #endif
 
-MotorBoard::MotorBoard(int sensePin, int enablePin, MOTOR_BOARD_TYPE type, const char *name) : sensePin(sensePin), enablePin(enablePin), name(name), current(0), triggered(false), lastCheckTime(0) {
+MotorBoard::MotorBoard(int sensePin, int enablePin, MOTOR_BOARD_TYPE type, const char *name)
+: sensePin(sensePin), enablePin(enablePin), name(name), current(0), triggered(false), lastCheckTime(0) {
+	pinMode(enablePin, OUTPUT);
+	powerOff(false, false);
 	switch(type) {
 		case ARDUINO_SHIELD:
 			// Arduino motor board: 890mA == 300*0.0049/1.65
