@@ -51,11 +51,12 @@ Part of DCC++ BASE STATION for the Arduino
   #define ARDUINO_TYPE "ESP32"
 
   //#define A0 34 //ADC1_6 n//These are just guesses from https://www.cnx-software.com/wp-content/uploads/2017/04/Hornbill-ESP32-Dev-Pinout.png
-  #define A1 A17 //ADC2_7
+  #define A1 A15 //ADC2_7
 
-  #define DCC_SIGNAL_PIN_MAIN 12          // Arduino Mega - uses OC1B
-  #define DCC_SIGNAL_PIN_PROG 2           // Arduino Mega - uses OC3B
-
+  #define DCC_SIGNAL_PIN_MAIN 27
+  #define DCC_SIGNAL_PIN_PROG 25           
+  #define SIGNAL_ENABLE_PIN_MAIN 26
+  #define SIGNAL_ENABLE_PIN_PROG 35
   #define USE_DCC_GENERATOR_ESP32 1
 #else
 
@@ -96,10 +97,10 @@ Part of DCC++ BASE STATION for the Arduino
 #elif MOTOR_SHIELD_TYPE == 2
 
   #define MOTOR_SHIELD_NAME "BTS7960B BASED MOTOR SHIELD"
-
+#ifndef SIGNAL_ENABLE_PIN_MAIN
   #define SIGNAL_ENABLE_PIN_MAIN 3
   #define SIGNAL_ENABLE_PIN_PROG 11
-
+#endif
   #define CURRENT_MONITOR_PIN_MAIN A0
   #define CURRENT_MONITOR_PIN_PROG A1
 
