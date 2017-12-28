@@ -24,6 +24,12 @@ Part of DCC++ BASE STATION for the Arduino
 MotorBoard::MotorBoard(int sensePin, int enablePin, MOTOR_BOARD_TYPE type, const char *name)
 : sensePin(sensePin), enablePin(enablePin), name(name), current(0), triggered(false), lastCheckTime(0) {
 	pinMode(enablePin, OUTPUT);
+	#ifdef ARDUINO_ARCH_ESP32
+	analogReadResolution(12);
+	analogSetAttenuation(ADC_11db);
+	//analogSetClockDiv(1); //0.8mhz
+	analogSetCycles(80); // 80 cycles at .8mhz
+	#endif
 	powerOff(false, false);
 	switch(type) {
 		case ARDUINO_SHIELD:
@@ -36,7 +42,7 @@ MotorBoard::MotorBoard(int sensePin, int enablePin, MOTOR_BOARD_TYPE type, const
 			break;
 		case BTS7960B_5A:
 			// BTS7960B motor board: 5.133A == 11*0.0049/0.0105
-			triggerValue = 11;
+			triggerValue = 4300;
 			break;
 		case BTS7960B_10A:
 			// BTS7960B motor board: 10.266A == 22*0.0049/0.0105
@@ -49,6 +55,9 @@ void MotorBoard::check() {
 	// if we have exceeded the CURRENT_SAMPLE_TIME we need to check if we are over/under current.
 	if(millis() - lastCheckTime > CURRENT_SAMPLE_TIME) {
 		lastCheckTime = millis();
+	/*	static int c = 0;
+			if((++c % 2000) == 0)
+				Serial.printf("current sense pin %d = %d\n", sensePin, analogRead(sensePin));*/
 		current = analogRead(sensePin) * CURRENT_SAMPLE_SMOOTHING + current * (1.0 - CURRENT_SAMPLE_SMOOTHING);
 		if(current > triggerValue && digitalRead(enablePin)) {
 			powerOff(false, true);
