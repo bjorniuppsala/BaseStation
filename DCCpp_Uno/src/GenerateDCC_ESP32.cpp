@@ -8,13 +8,13 @@
 #include <Arduino.h>
 #include "soc/timer_group_struct.h"
 constexpr uint16_t TIMER_DIVISOR = 80;  //1MHz (1us) timer count
-constexpr uint64_t ZERO_PERIOD = 58;    // 58us
-constexpr uint64_t ONE_PERIOD = 100;
+constexpr uint64_t ZERO_PERIOD = 100;    // 58us
+constexpr uint64_t ONE_PERIOD = 58;
 // each half-pulse should be 58us for a one and 100us for a zero
 
 namespace GenerateDCC{
     namespace {
-		constexpr size_t tx_buf_size = 32;
+		constexpr size_t tx_buf_size = 8;
 		auto nextPos(uint8_t pos) { return (pos + 1) % tx_buf_size; }
         struct Esp32Gen {
             hw_timer_t* timerMid, *timerFull;
@@ -58,9 +58,8 @@ namespace GenerateDCC{
 				{
 					gen.bitBuffer = gen.buffer[gen.readPos];
 					gen.readPos = nextPos(gen.readPos);
-				} else{
+				} else {
 					gen.bitBuffer = 0;
-
 				}
 				gen.remainingBits= 0;
 			}
@@ -121,11 +120,11 @@ namespace GenerateDCC{
         mainRegs.loadPacket(1,RegisterList::idlePacket,2,0);
         progRegs.loadPacket(1,RegisterList::idlePacket,2,0);    // load idle packet into register 1
 
-        pinMode(DIRECTION_MOTOR_CHANNEL_PIN_A,INPUT);      // ensure this pin is not active! Direction will be controlled by DCC SIGNAL instead (below)
-        digitalWrite(DIRECTION_MOTOR_CHANNEL_PIN_A,LOW);
+//        pinMode(DIRECTION_MOTOR_CHANNEL_PIN_A,INPUT);      // ensure this pin is not active! Direction will be controlled by DCC SIGNAL instead (below)
+//        digitalWrite(DIRECTION_MOTOR_CHANNEL_PIN_A,LOW);
         pinMode(DCC_SIGNAL_PIN_MAIN, OUTPUT);      // THIS ARDUINO OUPUT PIN MUST BE PHYSICALLY CONNECTED TO THE PIN FOR DIRECTION-A OF MOTOR CHANNEL-A
-        pinMode(DIRECTION_MOTOR_CHANNEL_PIN_B,INPUT);      // ensure this pin is not active! Direction will be controlled by DCC SIGNAL instead (below)
-        digitalWrite(DIRECTION_MOTOR_CHANNEL_PIN_B,LOW);
+//        pinMode(DIRECTION_MOTOR_CHANNEL_PIN_B,INPUT);      // ensure this pin is not active! Direction will be controlled by DCC SIGNAL instead (below)
+//        digitalWrite(DIRECTION_MOTOR_CHANNEL_PIN_B,LOW);
         pinMode(DCC_SIGNAL_PIN_PROG,OUTPUT);      // THIS ARDUINO OUTPUT PIN MUST BE PHYSICALLY CONNECTED TO THE PIN FOR DIRECTION-B OF MOTOR CHANNEL-B
 
         generators[0].setupTimers<0>();
@@ -134,7 +133,7 @@ namespace GenerateDCC{
 
     void loop()
     {
-		for(int i = 0; i < 1; ++i)
+		for(int i = 0; i < 2; ++i)
 			generators[i].fillBuffer();
         /*auto micros = timerRead(generators[1].timerMid);
         auto config = timerGetConfig(generators[1].timerMid);
