@@ -9,7 +9,6 @@
 #include "../../DCCpp_ESP/src/config.h"
 #include "../../DCCpp_ESP/src/DCCpp_ESP.h"
 #include "../../DCCpp_ESP/src/Output.h"
-#include "../../DCCpp_ESP/src/PacketRegister.h"
 #include "../../DCCpp_ESP/src/PowerDistrict.h"
 #include "../../DCCpp_ESP/src/ProgramRequest.h"
 #include "../../DCCpp_ESP/src/Queue.h"
