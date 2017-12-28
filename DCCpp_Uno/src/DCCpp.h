@@ -51,12 +51,23 @@ Part of DCC++ BASE STATION for the Arduino
   #define ARDUINO_TYPE "ESP32"
 
   //#define A0 34 //ADC1_6 n//These are just guesses from https://www.cnx-software.com/wp-content/uploads/2017/04/Hornbill-ESP32-Dev-Pinout.png
-  #define A1 A15 //ADC2_7
-
+//#define SWAP_PROG_MAIN
+#ifdef SWAP_PROG_MAIN
+# define DCC_SIGNAL_PIN_MAIN 25
+# define DCC_SIGNAL_PIN_PROG 27
+# define SIGNAL_ENABLE_PIN_MAIN 35
+# define SIGNAL_ENABLE_PIN_PROG 26
+/* A0 is main, a3(?) is prog */
+# define CURRENT_MONITOR_PIN_MAIN A3
+# define CURRENT_MONITOR_PIN_PROG A6
+#else
   #define DCC_SIGNAL_PIN_MAIN 27
-  #define DCC_SIGNAL_PIN_PROG 25           
+  #define DCC_SIGNAL_PIN_PROG 25
   #define SIGNAL_ENABLE_PIN_MAIN 26
   #define SIGNAL_ENABLE_PIN_PROG 35
+  # define CURRENT_MONITOR_PIN_MAIN A6
+  # define CURRENT_MONITOR_PIN_PROG A3
+ #endif
   #define USE_DCC_GENERATOR_ESP32 1
 #else
 
@@ -101,9 +112,11 @@ Part of DCC++ BASE STATION for the Arduino
   #define SIGNAL_ENABLE_PIN_MAIN 3
   #define SIGNAL_ENABLE_PIN_PROG 11
 #endif
+
+#ifndef CURRENT_MONITOR_PIN_MAIN
   #define CURRENT_MONITOR_PIN_MAIN A0
   #define CURRENT_MONITOR_PIN_PROG A1
-
+#endif
   #define DIRECTION_MOTOR_CHANNEL_PIN_A 12
   #define DIRECTION_MOTOR_CHANNEL_PIN_B 13
 
