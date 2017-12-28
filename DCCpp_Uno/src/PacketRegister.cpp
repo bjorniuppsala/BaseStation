@@ -69,20 +69,24 @@ void RegisterList::loadPacket(int nReg, byte *b, int nBytes, int nRepeat, int pr
 
   if(nBytes==3){
     p->nBits=49;
+	buf[6] |= 1 << 6;
   } else{
     buf[6]+=b[3]>>2;                  // b[3], bits 7-2
     buf[7]=b[3]<<6;                   // b[3], bit 1-0
     if(nBytes==4){
       p->nBits=58;
+	  buf[7] |= 1 << 5;
     } else{
       buf[7]+=b[4]>>3;                // b[4], bits 7-3
       buf[8]=b[4]<<5;                 // b[4], bits 2-0
       if(nBytes==5){
         p->nBits=67;
+		buf[8] |= 1 << 4;
       } else{
         buf[8]+=b[5]>>4;              // b[5], bits 7-4
         buf[9]=b[5]<<4;               // b[5], bits 3-0
         p->nBits=76;
+		buf[9] |= 1 << 3;
       } // >5 bytes
     } // >4 bytes
   } // >3 bytes
