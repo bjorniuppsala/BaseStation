@@ -7,6 +7,8 @@
 #include <atomic>
 #include <Arduino.h>
 #include "soc/timer_group_struct.h"
+#include "soc/gpio_struct.h"
+
 constexpr uint16_t TIMER_DIVISOR = 80;  //1MHz (1us) timer count
 constexpr uint64_t ZERO_PERIOD = 100;    // 58us
 constexpr uint64_t ONE_PERIOD = 58;
@@ -14,7 +16,7 @@ constexpr uint64_t ONE_PERIOD = 58;
 
 namespace GenerateDCC{
     namespace {
-		constexpr size_t tx_buf_size = 8;
+		constexpr size_t tx_buf_size = 16;
 		auto nextPos(uint8_t pos) { return (pos + 1) % tx_buf_size; }
         struct Esp32Gen {
             hw_timer_t* timerMid, *timerFull;
@@ -35,6 +37,7 @@ namespace GenerateDCC{
 
         inline auto pinForTimer(int timerId)
         { return timerId == 0? DCC_SIGNAL_PIN_MAIN : DCC_SIGNAL_PIN_PROG; }
+
 		inline void IRAM_ATTR setAlarm(timg_dev_t& tg, unsigned i, uint64_t period)
 		{
 			tg.hw_timer[i].alarm_high = (uint32_t)(period >> 32);
@@ -49,6 +52,23 @@ namespace GenerateDCC{
 			tg.hw_timer[1].reload = 1;
 			tg.hw_timer[1].config.alarm_en = 1;
 		}
+
+		inline void writeTimerPin(int timerId, int value)
+		{
+			auto pin = pinForTimer(timerId);
+			if(pin < 32) {
+				if(value)
+					GPIO.out_w1ts |= 1 << pin;
+				else
+					GPIO.out_w1tc |= 1 << pin;
+			} else if(pin < 40) {
+				if(value)
+					GPIO.out1_w1ts.data |= (1 << (pin - 32));
+				else
+					GPIO.out1_w1tc.data |= (1 << (pin - 32));
+			}
+		}
+
         template<int timerId>
         void IRAM_ATTR timerISR_full(void)
         {
@@ -125,7 +145,7 @@ namespace GenerateDCC{
         pinMode(DCC_SIGNAL_PIN_MAIN, OUTPUT);      // THIS ARDUINO OUPUT PIN MUST BE PHYSICALLY CONNECTED TO THE PIN FOR DIRECTION-A OF MOTOR CHANNEL-A
 //        pinMode(DIRECTION_MOTOR_CHANNEL_PIN_B,INPUT);      // ensure this pin is not active! Direction will be controlled by DCC SIGNAL instead (below)
 //        digitalWrite(DIRECTION_MOTOR_CHANNEL_PIN_B,LOW);
-        pinMode(DCC_SIGNAL_PIN_PROG,OUTPUT);      // THIS ARDUINO OUTPUT PIN MUST BE PHYSICALLY CONNECTED TO THE PIN FOR DIRECTION-B OF MOTOR CHANNEL-B
+        pinMode(DCC_SIGNAL_PIN_PROG, OUTPUT);      // THIS ARDUINO OUTPUT PIN MUST BE PHYSICALLY CONNECTED TO THE PIN FOR DIRECTION-B OF MOTOR CHANNEL-B
 
         generators[0].setupTimers<0>();
         generators[1].setupTimers<1>();
