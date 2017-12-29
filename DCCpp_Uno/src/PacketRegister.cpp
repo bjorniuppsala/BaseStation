@@ -131,8 +131,7 @@ void RegisterList::setThrottle(const char *s) volatile{
   }
 
   loadPacket(nReg,b,nB,0,1);
-Serial.printf("set throttle done.%d %d %d %d\n", nReg, cab, tSpeed, tDirection);
-  CommManager::printf("<T %d %d %d>", nReg, tSpeed, tDirection);
+  CommManager::printf("<T %d %d %d>", cab /*nReg*/, tSpeed, tDirection);
 Serial.printf("set throttle sent.%d %d %d %d\n", nReg, cab, tSpeed, tDirection);
   speedTable[nReg]=tDirection==1?tSpeed:-tSpeed;
 
