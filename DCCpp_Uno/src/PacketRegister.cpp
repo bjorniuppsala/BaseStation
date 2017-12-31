@@ -12,6 +12,8 @@ Part of DCC++ BASE STATION for the Arduino
 #include "CommInterface.h"
 #include "GenerateDCC.h"
 
+constexpr auto timing_pin = 17;
+
 ///////////////////////////////////////////////////////////////////////////////
 
 void Register::initPackets(){
@@ -34,6 +36,8 @@ RegisterList::RegisterList(int maxNumRegs){
   nextReg=NULL;
   currentBit=0;
   nRepeat=0;
+  pinMode(timing_pin, OUTPUT);
+  digitalWrite(timing_pin, LOW);
 } // RegisterList::RegisterList
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -96,7 +100,7 @@ void RegisterList::loadPacket(int nReg, byte *b, int nBytes, int nRepeat, int pr
 	  nextReg=r;
 	  this->nRepeat=nRepeat;
 	}
-  maxLoadedReg=max(maxLoadedReg,nextReg);
+  maxLoadedReg=max(maxLoadedReg, nextReg);
 //interrupts();
   if(printFlag && SHOW_PACKETS)       // for debugging purposes
     printPacket(nReg,b,nBytes,nRepeat);
@@ -210,7 +214,7 @@ void RegisterList::readCV(const char *s) volatile{
   int bValue;
   int c,d,base;
   int cv, callBack, callBackSub;
-	Serial.printf("ReadCV: %s\n", s);
+  Serial.printf("ReadCV: %s\n", s);
   if(sscanf(s,"%d %d %d",&cv,&callBack,&callBackSub) != 3) {         // cv = 1-1024
     return;
   }
@@ -229,15 +233,18 @@ void RegisterList::readCV(const char *s) volatile{
       base+=analogRead(CURRENT_MONITOR_PIN_PROG);
     }
     base/=ACK_BASE_COUNT;
-
+	bRead[0]=0x78+(highByte(cv)&0x03);   // any CV>1023 will become modulus(1024) due to bit-mask of 0x03
+	bRead[1]=lowByte(cv);
     bRead[2]=0xE8+i;
 
+while(nextReg!=NULL) { GenerateDCC::loop(); }
     loadPacket(0,resetPacket,2,3);          // NMRA recommends starting with 3 reset packets
 	while(nextReg!=NULL) { GenerateDCC::loop(); }
     loadPacket(0,bRead,3,5);                // NMRA recommends 5 verfy packets
 	while(nextReg!=NULL) { GenerateDCC::loop();}
-    //loadPacket(0,resetPacket,2,1);          // forces code to wait until all repeats of bRead are completed (and decoder begins to respond)
+    loadPacket(0,resetPacket,2,2);          // forces code to wait until all repeats of bRead are completed (and decoder begins to respond)
 	//while(nextReg!=NULL) { GenerateDCC::loop();}
+digitalWrite(timing_pin, HIGH);
 	auto start = micros();
 	int currents[ACK_SAMPLE_COUNT];
 	int j;
@@ -246,8 +253,10 @@ void RegisterList::readCV(const char *s) volatile{
 	  currents[j] = c;
       if( j > 20 && c>ACK_SAMPLE_THRESHOLD) {
         d=1;
+		break;
       }
     }
+	digitalWrite(timing_pin, LOW);
 	auto end = micros();
 	int cm = -4711;
 	for(auto cu : currents) cm = cm > cu ? cm : cu;
@@ -257,6 +266,7 @@ void RegisterList::readCV(const char *s) volatile{
 		Serial.printf("%d ; ", currents[q]);
 	Serial.printf("\n");*/
     bitWrite(bValue,i,d);
+	delay(30);
   }
 
   c=0;
@@ -267,25 +277,27 @@ void RegisterList::readCV(const char *s) volatile{
     base+=analogRead(CURRENT_MONITOR_PIN_PROG);
   }
   base/=ACK_BASE_COUNT;
-	Serial.printf("ReadCV: base current = %d Bitts said value = 0x%x\n", base, bValue);
+	Serial.printf("ReadCV: base current = %d Bits said value = 0x%x\n", base, bValue);
 
   bRead[0]=0x74+(highByte(cv)&0x03);   // set-up to re-verify entire byte
   bRead[1]=lowByte(cv);
   bRead[2]=bValue;
-
+while(nextReg!=NULL) { GenerateDCC::loop(); }
   loadPacket(0,resetPacket,2,3);          // NMRA recommends starting with 3 reset packets
   while(nextReg!=NULL) { GenerateDCC::loop();}
   loadPacket(0,bRead,3,5);                // NMRA recommends 5 verfy packets
   while(nextReg!=NULL) { GenerateDCC::loop();}
   loadPacket(0,resetPacket,2,1);          // forces code to wait until all repeats of bRead are completed (and decoder begins to respond)
-  while(nextReg!=NULL) { GenerateDCC::loop();}
 
+digitalWrite(timing_pin, HIGH);
   for(int j=0;j<ACK_SAMPLE_COUNT;j++){
     c=(analogRead(CURRENT_MONITOR_PIN_PROG)-base)*ACK_SAMPLE_SMOOTHING+c*(1.0-ACK_SAMPLE_SMOOTHING);
-    if(c>ACK_SAMPLE_THRESHOLD)
+    if(c>ACK_SAMPLE_THRESHOLD) {
       d=1;
+	  break;
+    }
   }
-
+digitalWrite(timing_pin, LOW);
   if(d==0)    // verify unsuccessful
     bValue=-1;
 
