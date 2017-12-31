@@ -111,7 +111,7 @@ namespace GenerateDCC{
 	                            nullptr//TaskHandle_t *pxCreatedTask
 	                          );
 
-			if(err != ESP_OK) Serial.printf("Failed to start task driver: %d\n", err);
+			if(err != pdPASS) Serial.printf("Failed to start task driver: %d\n", err);
 		}
     }
     void loop()
