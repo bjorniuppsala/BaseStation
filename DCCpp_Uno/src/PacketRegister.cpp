@@ -14,6 +14,46 @@ Part of DCC++ BASE STATION for the Arduino
 
 constexpr auto timing_pin = 17;
 
+void Packet::setup(byte* b, byte nBytes, byte r)
+{
+  auto checksum = b[0];                        // copy first byte into what will become the checksum byte
+  for(int i=1;i<nBytes;i++)              // XOR remaining bytes into checksum byte
+    checksum ^= b[i];
+  nBytes++;                              // increment number of bytes in packet to include checksum byte
+
+  buf[0]=0xFF;                        // first 8 bytes of 22-byte preamble
+  buf[1]=0xFF;                        // second 8 bytes of 22-byte preamble
+  buf[2]=0xFC + bitRead(b[0],7);      // last 6 bytes of 22-byte preamble + data start bit + b[0], bit 7
+  buf[3]=b[0]<<1;                     // b[0], bits 6-0 + data start bit
+  buf[4]=b[1];                        // b[1], all bits
+  buf[5]=b[2]>>1;                     // b[2], bits 7-1
+  buf[6]=b[2]<<7;                     // b[2], bit 0
+
+  if(nBytes==3){
+    nBits=50;
+    buf[6] |= 1 << 6;
+  } else{
+    buf[6]+=b[3]>>2;                  // b[3], bits 7-2
+    buf[7]=b[3]<<6;                   // b[3], bit 1-0
+    if(nBytes==4){
+      nBits=59;
+      buf[7] |= 1 << 5;
+    } else{
+      buf[7]+=b[4]>>3;                // b[4], bits 7-3
+      buf[8]=b[4]<<5;                 // b[4], bits 2-0
+      if(nBytes==5){
+        nBits=68;
+        buf[8] |= 1 << 4;
+      } else{
+        buf[8]+=b[5]>>4;              // b[5], bits 7-4
+        buf[9]=b[5]<<4;               // b[5], bits 3-0
+        nBits=77;
+        buf[9] |= 1 << 3;
+      } // >5 bytes
+    } // >4 bytes
+  } // >3 bytes
+  nRepeat = r;
+}
 ///////////////////////////////////////////////////////////////////////////////
 
 void Register::initPackets(){
@@ -46,65 +86,22 @@ RegisterList::RegisterList(int maxNumRegs){
 // CONVERTS 2, 3, 4, OR 5 BYTES INTO A DCC BIT STREAM WITH PREAMBLE, CHECKSUM, AND PROPER BYTE SEPARATORS
 // BITSTREAM IS STORED IN UP TO A 10-BYTE ARRAY (USING AT MOST 76 OF 80 BITS)
 
-void RegisterList::loadPacket(int nReg, byte *b, int nBytes, int nRepeat, int printFlag) volatile {
+void RegisterList::loadPacket(int nReg, byte *b, int nBytes, int nRepeat, int printFlag) volatile
+{
+  nReg=nReg%((maxNumRegs+1));      // force nReg to be between 0 and maxNumRegs, inclusive
+  bool updateRegMap = regMap[nReg]==nullptr;
+  if(updateRegMap)                 // first time this Register Number has been called
+   regMap[nReg] = maxLoadedReg+1;  // set Register Pointer for this Register Number to next available Register
 
-  nReg=nReg%((maxNumRegs+1));          // force nReg to be between 0 and maxNumRegs, inclusive
-
-//  while(nextReg!=NULL) { /* nothing */};              // pause while there is a Register already waiting to be updated -- nextReg will be reset to NULL by interrupt when prior Register updated fully processed
-
-  if(regMap[nReg]==NULL)              // first time this Register Number has been called
-   regMap[nReg]=maxLoadedReg+1;       // set Register Pointer for this Register Number to next available Register
-//noInterrupts();
-  Register *r=regMap[nReg];           // set Register to be updated
-  Packet *p=r->updatePacket;          // set Packet in the Register to be updated
-  byte *buf=p->buf;                   // set byte buffer in the Packet to be updated
-
-  b[nBytes]=b[0];                        // copy first byte into what will become the checksum byte
-  for(int i=1;i<nBytes;i++)              // XOR remaining bytes into checksum byte
-    b[nBytes]^=b[i];
-  nBytes++;                              // increment number of bytes in packet to include checksum byte
-
-  buf[0]=0xFF;                        // first 8 bytes of 22-byte preamble
-  buf[1]=0xFF;                        // second 8 bytes of 22-byte preamble
-  buf[2]=0xFC + bitRead(b[0],7);      // last 6 bytes of 22-byte preamble + data start bit + b[0], bit 7
-  buf[3]=b[0]<<1;                     // b[0], bits 6-0 + data start bit
-  buf[4]=b[1];                        // b[1], all bits
-  buf[5]=b[2]>>1;                     // b[2], bits 7-1
-  buf[6]=b[2]<<7;                     // b[2], bit 0
-
-  if(nBytes==3){
-    p->nBits=50;
-	buf[6] |= 1 << 6;
-  } else{
-    buf[6]+=b[3]>>2;                  // b[3], bits 7-2
-    buf[7]=b[3]<<6;                   // b[3], bit 1-0
-    if(nBytes==4){
-      p->nBits=59;
-	  buf[7] |= 1 << 5;
-    } else{
-      buf[7]+=b[4]>>3;                // b[4], bits 7-3
-      buf[8]=b[4]<<5;                 // b[4], bits 2-0
-      if(nBytes==5){
-        p->nBits=68;
-		buf[8] |= 1 << 4;
-      } else{
-        buf[8]+=b[5]>>4;              // b[5], bits 7-4
-        buf[9]=b[5]<<4;               // b[5], bits 3-0
-        p->nBits=77;
-		buf[9] |= 1 << 3;
-      } // >5 bytes
-    } // >4 bytes
-  } // >3 bytes
-
-	if(nextReg == nullptr) {
+  auto *r = regMap[nReg];          // set Register to be updated
+  r->updatePacket->setup(b, nBytes, nRepeat);
+	if(!nextReg)
 	  nextReg=r;
-	  this->nRepeat=nRepeat;
-	}
-  maxLoadedReg=max(maxLoadedReg,nextReg);
-//interrupts();
+  if(updateRegMap)
+    maxLoadedReg=max(maxLoadedReg, r);
+
   if(printFlag && SHOW_PACKETS)       // for debugging purposes
     printPacket(nReg,b,nBytes,nRepeat);
-
 } // RegisterList::loadPacket
 
 ///////////////////////////////////////////////////////////////////////////////

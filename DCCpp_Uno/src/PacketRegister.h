@@ -15,15 +15,25 @@ Part of DCC++ BASE STATION for the Arduino
 // Define constants used for reading CVs from the Programming Track
 
 #define  ACK_BASE_COUNT            100      // number of analogRead samples to take before each CV verify to establish a baseline current
-#define  ACK_SAMPLE_COUNT          2500      // number of analogRead samples to take when monitoring current after a CV verify (bit or byte) has been sent
+#define  ACK_SAMPLE_COUNT          2500     // number of analogRead samples to take when monitoring current after a CV verify (bit or byte) has been sent
 #define  ACK_SAMPLE_SMOOTHING      0.2      // exponential smoothing to use in processing the analogRead samples after a CV verify (bit or byte) has been sent
 #define  ACK_SAMPLE_THRESHOLD       20      // the threshold that the exponentially-smoothed analogRead samples (after subtracting the baseline current) must cross to establish ACKNOWLEDGEMENT
 
 // Define a series of registers that can be sequentially accessed over a loop to generate a repeating series of DCC Packets
 
 struct Packet{
-  byte buf[10];
   byte nBits;
+  byte buf[10];
+  byte nRepeat;
+  Packet(byte const* d, byte n, byte r);
+
+  template<size_t n>
+  Packet(byte (&data)[n], byte r)
+  { setup(data, n, r); }
+
+  Packet() {}
+  //!SEtup the contents of packet, using d as a scratchbuffer must be able to hold n + 1 bytes.
+  void setup(byte* d, byte n, byte r);
 }; // Packet
 
 struct Register{
@@ -48,7 +58,7 @@ struct RegisterList{
   static byte resetPacket[];
   static byte bitMask[];
   RegisterList(int);
-  void loadPacket(int, byte *, int, int, int=0) volatile;
+  void loadPacket(int nReg, byte *b, int nBytes, int nRepeat, int printFlag = 0) volatile;
   void setThrottle(const char *) volatile;
   void setFunction(const char *) volatile;
   void setAccessory(const char *) volatile;
@@ -60,13 +70,15 @@ struct RegisterList{
   void writeCVBitMain(const char *s) volatile;
   void printPacket(int, byte *, int, int) volatile;
 
+  void sendSequence(int nReg, Packet const* packets, int n);
+
   auto NextPacket() volatile
   {
 	  auto& R = *this;
 	  auto packet = R.currentReg->activePacket;
 	  R.currentBit=0;                           /*   reset current bit pointer and determine which Register and Packet to process next--- */
-	  if(R.nRepeat>0 && R.currentReg==R.reg){               /*   IF current Register is first Register AND should be repeated */
-	    R.nRepeat--;                                        /*     decrement repeat count; result is this same Packet will be repeated */
+	  if(packet->nRepeat>0 && R.currentReg==R.reg){               /*   IF current Register is first Register AND should be repeated */
+	    packet->nRepeat--;                                        /*     decrement repeat count; result is this same Packet will be repeated */
 	  } else if(R.nextReg!=NULL){                           /*   ELSE IF another Register has been updated */ \
 	    R.currentReg=R.nextReg;                             /*     update currentReg to nextReg */ \
 	    R.nextReg=NULL;                                     /*     reset nextReg to NULL */ \
@@ -88,21 +100,8 @@ struct RegisterList{
       auto currBitNo = R.currentBit;
       auto packet = R.currentReg->activePacket;
       if(currBitNo >= packet->nBits){    /* IF no more bits in this DCC Packet */
-        currBitNo = R.currentBit=0;                           /*   reset current bit pointer and determine which Register and Packet to process next--- */
-        if(R.nRepeat>0 && R.currentReg==R.reg){               /*   IF current Register is first Register AND should be repeated */
-          R.nRepeat--;                                        /*     decrement repeat count; result is this same Packet will be repeated */
-        } else if(R.nextReg!=NULL){                           /*   ELSE IF another Register has been updated */ \
-          R.currentReg=R.nextReg;                             /*     update currentReg to nextReg */ \
-          R.nextReg=NULL;                                     /*     reset nextReg to NULL */ \
-          auto tmp =R.currentReg->activePacket;            /*     flip active and update Packets */ \
-          packet = R.currentReg->activePacket = R.currentReg->updatePacket; \
-          R.currentReg->updatePacket=tmp; \
-        } else{                                               /*   ELSE simply move to next Register */ \
-          if(R.currentReg==R.maxLoadedReg)                    /*     BUT IF this is last Register loaded */ \
-            R.currentReg=R.reg;                               /*       first reset currentReg to base Register, THEN */ \
-          R.currentReg++;
-          packet = R.currentReg->activePacket;/*     increment current Register (note this logic causes Register[0] to be skipped when simply cycling through all Registers) */ \
-        }
+        currBitNo = 0;
+        packet = NextPacket();
       }
       auto result = packet->buf[currBitNo/8];
       R.currentBit += 8;
@@ -114,21 +113,8 @@ struct RegisterList{
       auto currBitNo = R.currentBit;
       auto packet = R.currentReg->activePacket;
       if(currBitNo==packet->nBits){    /* IF no more bits in this DCC Packet */
-        currBitNo = R.currentBit=0;                           /*   reset current bit pointer and determine which Register and Packet to process next--- */
-        if(R.nRepeat>0 && R.currentReg==R.reg){               /*   IF current Register is first Register AND should be repeated */
-          R.nRepeat--;                                        /*     decrement repeat count; result is this same Packet will be repeated */
-        } else if(R.nextReg!=NULL){                           /*   ELSE IF another Register has been updated */ \
-          R.currentReg=R.nextReg;                             /*     update currentReg to nextReg */ \
-          R.nextReg=NULL;                                     /*     reset nextReg to NULL */ \
-          auto tmp =R.currentReg->activePacket;            /*     flip active and update Packets */ \
-          packet = R.currentReg->activePacket = R.currentReg->updatePacket; \
-          R.currentReg->updatePacket=tmp; \
-        } else{                                               /*   ELSE simply move to next Register */ \
-          if(R.currentReg==R.maxLoadedReg)                    /*     BUT IF this is last Register loaded */ \
-            R.currentReg=R.reg;                               /*       first reset currentReg to base Register, THEN */ \
-          R.currentReg++;
-          packet = R.currentReg->activePacket;/*     increment current Register (note this logic causes Register[0] to be skipped when simply cycling through all Registers) */ \
-        }
+        currBitNo = 0;
+        packet = NextPacket();
       }
       auto bit = packet->buf[currBitNo/8] & R.bitMask[currBitNo%8];
       ++R.currentBit;
