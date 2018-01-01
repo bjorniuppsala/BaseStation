@@ -100,7 +100,7 @@ void RegisterList::loadPacket(int nReg, byte *b, int nBytes, int nRepeat, int pr
 	  nextReg=r;
 	  this->nRepeat=nRepeat;
 	}
-  maxLoadedReg=max(maxLoadedReg, nextReg);
+  maxLoadedReg=max(maxLoadedReg,nextReg);
 //interrupts();
   if(printFlag && SHOW_PACKETS)       // for debugging purposes
     printPacket(nReg,b,nBytes,nRepeat);
@@ -214,7 +214,7 @@ void RegisterList::readCV(const char *s) volatile{
   int bValue;
   int c,d,base;
   int cv, callBack, callBackSub;
-  Serial.printf("ReadCV: %s\n", s);
+	Serial.printf("ReadCV: %s\n", s);
   if(sscanf(s,"%d %d %d",&cv,&callBack,&callBackSub) != 3) {         // cv = 1-1024
     return;
   }
@@ -266,7 +266,6 @@ digitalWrite(timing_pin, HIGH);
 		Serial.printf("%d ; ", currents[q]);
 	Serial.printf("\n");*/
     bitWrite(bValue,i,d);
-	delay(30);
   }
 
   c=0;
