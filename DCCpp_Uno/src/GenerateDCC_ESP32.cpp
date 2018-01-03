@@ -105,13 +105,13 @@ namespace GenerateDCC{
 			// spawn a task
 			err = xTaskCreate(    &fillRMTTask,
 	                            tn,
-								5* 1024,
+                              5* 1024,
 	                            p_rmt_obj + c,
 	                            1, //UBaseType_t uxPriority,
 	                            nullptr//TaskHandle_t *pxCreatedTask
 	                          );
 
-			if(err != ESP_OK) Serial.printf("Failed to start task driver: %d\n", err);
+			if(err != pdPASS) Serial.printf("Failed to start task driver: %d\n", err);
 		}
     }
     void loop()
