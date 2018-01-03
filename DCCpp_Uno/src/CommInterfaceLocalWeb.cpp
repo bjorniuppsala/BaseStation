@@ -50,6 +50,7 @@ void LocalWebInterface::process()
 				SerialCommand::parse(buffer.c_str());
 			buffer = "";
 			inCommandPayload = false;
+      break;
 		} else if(inCommandPayload) {
 			buffer += (char)ch;
 		}
