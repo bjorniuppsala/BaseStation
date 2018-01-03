@@ -11,6 +11,7 @@ Part of DCC++ BASE STATION for the Arduino
 #include "PacketRegister.h"
 #include "CommInterface.h"
 #include "GenerateDCC.h"
+#include <algorithm>
 
 constexpr auto timing_pin = 17;
 
@@ -19,6 +20,7 @@ void Packet::setup(byte* b, byte nBytes, byte r)
   auto checksum = b[0];                        // copy first byte into what will become the checksum byte
   for(int i=1;i<nBytes;i++)              // XOR remaining bytes into checksum byte
     checksum ^= b[i];
+  b[nBytes] = checksum;
   nBytes++;                              // increment number of bytes in packet to include checksum byte
 
   buf[0]=0xFF;                        // first 8 bytes of 22-byte preamble
@@ -63,7 +65,9 @@ void Register::initPackets(){
 
 ///////////////////////////////////////////////////////////////////////////////
 
-RegisterList::RegisterList(int maxNumRegs){
+RegisterList::RegisterList(int maxNumRegs)
+: currentPacket{nullptr}
+{
   this->maxNumRegs=maxNumRegs;
   reg=(Register *)calloc((maxNumRegs+1),sizeof(Register));
   for(int i=0;i<=maxNumRegs;i++)
@@ -95,10 +99,12 @@ void RegisterList::loadPacket(int nReg, byte *b, int nBytes, int nRepeat, int pr
 
   auto *r = regMap[nReg];          // set Register to be updated
   r->updatePacket->setup(b, nBytes, nRepeat);
+  std::swap(r->updatePacket, r->activePacket);
+  if(!currentPacket) currentPacket=r->activePacket;
 	if(!nextReg)
 	  nextReg=r;
   if(updateRegMap)
-    maxLoadedReg=max(maxLoadedReg, r);
+    maxLoadedReg=std::max(const_cast<Register*>(maxLoadedReg), r);
 
   if(printFlag && SHOW_PACKETS)       // for debugging purposes
     printPacket(nReg,b,nBytes,nRepeat);
@@ -204,14 +210,62 @@ void RegisterList::writeTextPacket(const char *s) volatile{
   loadPacket(nReg,b,nBytes,0,1);
 } // RegisterList::writeTextPacket()
 
+void RegisterList::scheduleSequence(Packet* packets, size_t n) volatile
+{
+  sequence = packets;
+  sequenceLength = n;
+}
+void RegisterList::waitForSequence(size_t expectedRemainingLength) volatile const
+{
+  while(sequence && sequenceLength > expectedRemainingLength) { /* nothing */}
+}
+void RegisterList::killSequence()
+{
+  sequence = nullptr;
+  sequenceLength = 0;
+}
+
+namespace {
+  struct AckPoller {
+    int32_t base;
+
+    AckPoller()
+    : base{0}
+    {
+      digitalWrite(timing_pin, HIGH);
+      for(int j=0;j<ACK_BASE_COUNT;j++) {
+        base += analogRead(CURRENT_MONITOR_PIN_PROG);
+      }
+      base/=ACK_BASE_COUNT;
+      digitalWrite(timing_pin, LOW);
+    }
+
+    auto pollNow()
+    {
+      digitalWrite(timing_pin, HIGH);
+      int d = 0;
+      int32_t c = base;
+      //Serial.printf("ACK: base %d\n", base);
+      for(int j=0;j<ACK_SAMPLE_COUNT;j++){
+        c=(analogRead(CURRENT_MONITOR_PIN_PROG)-base)*ACK_SAMPLE_SMOOTHING+c*(1.0-ACK_SAMPLE_SMOOTHING);
+        if( j > 20 && c > ACK_SAMPLE_THRESHOLD) {
+          //Serial.printf("A! c: %d j: %d\n", c, j);
+          d=1;
+          break;
+        }
+      }
+      digitalWrite(timing_pin, LOW);
+      return d;
+    }
+  };
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 
 void RegisterList::readCV(const char *s) volatile{
   byte bRead[4];
   int bValue;
-  int c,d,base;
   int cv, callBack, callBackSub;
-	Serial.printf("ReadCV: %s\n", s);
   if(sscanf(s,"%d %d %d",&cv,&callBack,&callBackSub) != 3) {         // cv = 1-1024
     return;
   }
@@ -219,85 +273,48 @@ void RegisterList::readCV(const char *s) volatile{
 
   bRead[0]=0x78+(highByte(cv)&0x03);   // any CV>1023 will become modulus(1024) due to bit-mask of 0x03
   bRead[1]=lowByte(cv);
-
+  Packet seq[] = { Packet{resetPacket, 3}, Packet{}, Packet{resetPacket, 2}};
   bValue=0;
 
   for(int i=0;i<8;i++) {
-    c=0;
-    d=0;
-    base=0;
-    for(int j=0;j<ACK_BASE_COUNT;j++) {
-      base+=analogRead(CURRENT_MONITOR_PIN_PROG);
-    }
-    base/=ACK_BASE_COUNT;
-	bRead[0]=0x78+(highByte(cv)&0x03);   // any CV>1023 will become modulus(1024) due to bit-mask of 0x03
-	bRead[1]=lowByte(cv);
     bRead[2]=0xE8+i;
+    seq[0].nRepeat = 5;
+    seq[1].setup(bRead, 3, 5);
+    seq[2].nRepeat = 7;
+    scheduleSequence(seq);
+    while(seq[0].nRepeat > 3) {} // wait fo some reset packets, so that we know the previous ack has finished.
+    AckPoller ack;
+    //waitForSequence(1); //listen for ack during the resetpacket.
+    while(seq[1].nRepeat == 5) { /* nothing */}
 
-while(nextReg!=NULL) { GenerateDCC::loop(); }
-    loadPacket(0,resetPacket,2,3);          // NMRA recommends starting with 3 reset packets
-	while(nextReg!=NULL) { GenerateDCC::loop(); }
-    loadPacket(0,bRead,3,5);                // NMRA recommends 5 verfy packets
-	while(nextReg!=NULL) { GenerateDCC::loop();}
-    loadPacket(0,resetPacket,2,2);          // forces code to wait until all repeats of bRead are completed (and decoder begins to respond)
-	//while(nextReg!=NULL) { GenerateDCC::loop();}
-digitalWrite(timing_pin, HIGH);
-	auto start = micros();
-	int currents[ACK_SAMPLE_COUNT];
-	int j;
-    for(j=0;j<ACK_SAMPLE_COUNT;j++){
-      c=(analogRead(CURRENT_MONITOR_PIN_PROG)-base)*ACK_SAMPLE_SMOOTHING+c*(1.0-ACK_SAMPLE_SMOOTHING);
-	  currents[j] = c;
-      if( j > 20 && c>ACK_SAMPLE_THRESHOLD) {
-        d=1;
-		break;
-      }
-    }
-	digitalWrite(timing_pin, LOW);
-	auto end = micros();
-	int cm = -4711;
-	for(auto cu : currents) cm = cm > cu ? cm : cu;
-	Serial.printf("Read bit %d d = %d, base = %d current = %d micros %d max current %d\n", i, d, base, c, end - start,
-			cm);
-	/*for(int q = 0; q < j; ++q)
-		Serial.printf("%d ; ", currents[q]);
-	Serial.printf("\n");*/
-    bitWrite(bValue,i,d);
+    auto start = micros();
+    auto d = ack.pollNow();
+    auto end = micros();
+    const_cast<RegisterList*>(this)->killSequence();
+    //Serial.printf("Read bit %d d = %d, base = %d micros %d\n", i, d, ack.base, end - start);
+    bitWrite(bValue, i, d);
+
+    while(currentPacket == seq + 2) {/*nothing*/}
   }
-
-  c=0;
-  d=0;
-  base=0;
-
-  for(int j=0;j<ACK_BASE_COUNT;j++) {
-    base+=analogRead(CURRENT_MONITOR_PIN_PROG);
-  }
-  base/=ACK_BASE_COUNT;
-	Serial.printf("ReadCV: base current = %d Bits said value = 0x%x\n", base, bValue);
 
   bRead[0]=0x74+(highByte(cv)&0x03);   // set-up to re-verify entire byte
   bRead[1]=lowByte(cv);
   bRead[2]=bValue;
-while(nextReg!=NULL) { GenerateDCC::loop(); }
-  loadPacket(0,resetPacket,2,3);          // NMRA recommends starting with 3 reset packets
-  while(nextReg!=NULL) { GenerateDCC::loop();}
-  loadPacket(0,bRead,3,5);                // NMRA recommends 5 verfy packets
-  while(nextReg!=NULL) { GenerateDCC::loop();}
-  loadPacket(0,resetPacket,2,1);          // forces code to wait until all repeats of bRead are completed (and decoder begins to respond)
-
-digitalWrite(timing_pin, HIGH);
-  for(int j=0;j<ACK_SAMPLE_COUNT;j++){
-    c=(analogRead(CURRENT_MONITOR_PIN_PROG)-base)*ACK_SAMPLE_SMOOTHING+c*(1.0-ACK_SAMPLE_SMOOTHING);
-    if(c>ACK_SAMPLE_THRESHOLD) {
-      d=1;
-	  break;
-    }
-  }
-digitalWrite(timing_pin, LOW);
+  auto backup = bValue;
+  seq[0].nRepeat = 5;
+  seq[1].setup(bRead, 3, 5);
+  seq[2].nRepeat = 7;
+  scheduleSequence(seq);
+  while(seq[0].nRepeat > 3) {} // wait fo some reset packets, so that we know the previous ack has finished.
+  AckPoller ack;
+  //waitForSequence(1); //listen for ack during the resetpacket.
+  while(seq[1].nRepeat == 5) { /* nothing */}
+  auto d = ack.pollNow();
   if(d==0)    // verify unsuccessful
     bValue=-1;
-
-  CommManager::printf("<r%d|%d|%d %d>", callBack, callBackSub, cv+1, bValue);
+  const_cast<RegisterList*>(this)->killSequence();
+  while(currentPacket == seq + 2) {/*nothing*/}
+  CommManager::printf("<r%d|%d|%d %d> <%d>", callBack, callBackSub, cv+1, bValue, backup);
 } // RegisterList::readCV()
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -305,7 +322,6 @@ digitalWrite(timing_pin, LOW);
 void RegisterList::writeCVByte(const char *s) volatile{
   byte bWrite[4];
   int bValue;
-  int c,d,base;
   int cv, callBack, callBackSub;
 
   if(sscanf(s,"%d %d %d %d",&cv,&bValue,&callBack,&callBackSub)!=4)          // cv = 1-1024
@@ -321,13 +337,7 @@ void RegisterList::writeCVByte(const char *s) volatile{
   loadPacket(0,resetPacket,2,1);
   loadPacket(0,idlePacket,2,10);
 
-  c=0;
-  d=0;
-  base=0;
-
-  for(int j=0;j<ACK_BASE_COUNT;j++)
-    base+=analogRead(CURRENT_MONITOR_PIN_PROG);
-  base/=ACK_BASE_COUNT;
+  AckPoller ack;
 
   bWrite[0]=0x74+(highByte(cv)&0x03);   // set-up to re-verify entire byte
 
@@ -335,12 +345,7 @@ void RegisterList::writeCVByte(const char *s) volatile{
   loadPacket(0,bWrite,3,5);               // NMRA recommends 5 verfy packets
   loadPacket(0,resetPacket,2,1);          // forces code to wait until all repeats of bRead are completed (and decoder begins to respond)
 
-  for(int j=0;j<ACK_SAMPLE_COUNT;j++){
-    c=(analogRead(CURRENT_MONITOR_PIN_PROG)-base)*ACK_SAMPLE_SMOOTHING+c*(1.0-ACK_SAMPLE_SMOOTHING);
-    if(c>ACK_SAMPLE_THRESHOLD)
-      d=1;
-  }
-
+  auto d = ack.pollNow();
   if(d==0)    // verify unsuccessful
     bValue=-1;
 
